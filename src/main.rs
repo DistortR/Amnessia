@@ -1,5 +1,6 @@
 mod background;
 mod db;
+mod tray;
 
 use gtk4::{
     prelude::*, Application, ApplicationWindow, Box as GtkBox, Button, Calendar, CheckButton,
@@ -458,7 +459,13 @@ fn check_reminders(ui: &Ui) {
                         }
                     };
                     match std::process::Command::new("notify-send")
-                        .args(["--app-name=Amnessia", "--", &title, &body])
+                        .args([
+                            "--app-name=Amnessia",
+                            "--icon=com.amnessia.App-triangle",
+                            "--",
+                            &title,
+                            &body,
+                        ])
                         .status()
                     {
                         Ok(status) if status.success() => {
@@ -510,8 +517,10 @@ fn build(app: &Application) {
             return;
         }
     };
+    gtk4::Window::set_default_icon_name("com.amnessia.App-triangle");
     let window = ApplicationWindow::builder()
         .application(app)
+        .icon_name("com.amnessia.App-triangle")
         .title("Amnessia")
         .default_width(960)
         .default_height(640)
@@ -535,10 +544,28 @@ fn build(app: &Application) {
     let side = GtkBox::new(Orientation::Vertical, 12);
     side.add_css_class("sidebar");
     side.set_width_request(240);
-    let brand = Label::new(None);
-    brand.set_markup("<span foreground='#bd8cff'>▲</span>mnessia");
-    brand.set_xalign(0.0);
+    let brand = GtkBox::new(Orientation::Horizontal, 2);
     brand.add_css_class("brand");
+    let loader = gtk4::gdk_pixbuf::PixbufLoader::new();
+    loader.set_size(34, 34);
+    let logo = match loader
+        .write(include_bytes!("../assets/com.amnessia.App.svg"))
+        .and_then(|_| loader.close())
+    {
+        Ok(()) => gtk4::Image::from_pixbuf(loader.pixbuf().as_ref()),
+        Err(error) => {
+            eprintln!("Could not load Amnessia logo: {error}");
+            gtk4::Image::new()
+        }
+    };
+    logo.set_pixel_size(34);
+    logo.set_margin_bottom(3);
+    logo.update_property(&[gtk4::accessible::Property::Label("Amnessia logo")]);
+    brand.append(&logo);
+    let brand_name = Label::new(Some("mnessia"));
+    brand_name.set_xalign(0.0);
+    brand_name.set_valign(gtk4::Align::End);
+    brand.append(&brand_name);
     side.append(&brand);
     let heading = Label::new(Some("EPISODES"));
     heading.set_xalign(0.0);
@@ -635,6 +662,24 @@ fn build(app: &Application) {
         window.set_visible(false);
         gtk4::glib::Propagation::Stop
     });
+    let (tray_sender, tray_receiver) = std::sync::mpsc::channel();
+    match tray::start(tray_sender) {
+        Ok(tray_handle) => {
+            let tray_window = window.clone();
+            let tray_app = app.clone();
+            gtk4::glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
+                let _keep_tray_alive = &tray_handle;
+                while let Ok(action) = tray_receiver.try_recv() {
+                    match action {
+                        tray::Action::Open => tray_window.present(),
+                        tray::Action::Quit => tray_app.quit(),
+                    }
+                }
+                gtk4::glib::ControlFlow::Continue
+            });
+        }
+        Err(e) => show_error(&ui, format!("Could not start the system tray icon: {e}")),
+    }
     check_reminders(&ui);
     gtk4::glib::timeout_add_seconds_local(5, move || {
         check_reminders(&ui);

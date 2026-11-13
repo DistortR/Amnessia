@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Install Amnessia's icon and development launcher for the current user."""
+import os
+from pathlib import Path
+import shutil
+
+project = Path(__file__).resolve().parent.parent
+binary = project / 'target/release/amnessia-demo'
+if not binary.is_file():
+    raise SystemExit('Build the app first with: cargo build --release')
+
+configured = os.environ.get('XDG_DATA_HOME', '')
+data = Path(configured) if configured and Path(configured).is_absolute() else Path.home() / '.local/share'
+icon = data / 'icons/hicolor/scalable/apps/com.amnessia.App-triangle.svg'
+desktop = data / 'applications/com.amnessia.App.desktop'
+icon.parent.mkdir(parents=True, exist_ok=True)
+desktop.parent.mkdir(parents=True, exist_ok=True)
+shutil.copyfile(project / 'assets/com.amnessia.App.svg', icon)
+executable = str(binary).replace('%', '%%').replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$')
+desktop.write_text(f'''[Desktop Entry]\nType=Application\nName=Amnessia\nComment=Keep track of your Flashes\nExec="{executable}"\nIcon=com.amnessia.App-triangle\nTerminal=false\nCategories=Utility;\nStartupWMClass=com.amnessia.App\n''')
+print(f'Installed icon: {icon}\nInstalled launcher: {desktop}')
