@@ -19,6 +19,10 @@ mod imp {
         pub target_x: Cell<f64>,
         pub target_y: Cell<f64>,
         pub ticking: Cell<bool>,
+        pub lift: Cell<f64>,
+        pub target_lift: Cell<f64>,
+        pub hover_lift: Cell<f64>,
+        pub hover_tilt: Cell<f64>,
     }
     #[glib::object_subclass]
     impl ObjectSubclass for BlurRow {
@@ -43,6 +47,7 @@ mod imp {
                 let width = self.obj().width() as f32;
                 let height = self.obj().height() as f32;
                 snapshot.save();
+                snapshot.translate(&gtk4::graphene::Point::new(0.0, -self.lift.get() as f32));
                 snapshot.translate(&gtk4::graphene::Point::new(width / 2.0, height / 2.0));
                 snapshot.perspective(800.0);
                 snapshot.rotate_3d(
@@ -75,6 +80,16 @@ glib::wrapper! {
 }
 
 impl BlurRow {
+    pub fn with_hover_tilt(self, degrees: f64) -> Self {
+        self.imp().hover_tilt.set(degrees);
+        self
+    }
+
+    pub fn with_hover_lift(self, pixels: f64) -> Self {
+        self.imp().hover_lift.set(pixels);
+        self
+    }
+
     pub fn new(
         child: &impl IsA<gtk4::Widget>,
         animate_entrance: bool,
@@ -86,6 +101,17 @@ impl BlurRow {
         row.set_overflow(gtk4::Overflow::Visible);
         let motion = gtk4::EventControllerMotion::new();
         motion.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let weak = row.downgrade();
+        motion.connect_enter(move |_, _, _| {
+            if let Some(row) = weak.upgrade() {
+                if gtk4::Settings::default().is_none_or(|s| s.is_gtk_enable_animations()) {
+                    row.imp().target_lift.set(row.imp().hover_lift.get());
+                    row.imp().target_x.set(-row.imp().hover_tilt.get());
+                    row.imp().target_y.set(row.imp().hover_tilt.get() * 0.5);
+                    animate_tilt(&row);
+                }
+            }
+        });
         let weak = row.downgrade();
         motion.connect_motion(move |_, x, y| {
             let Some(row) = weak.upgrade() else {
@@ -101,13 +127,16 @@ impl BlurRow {
                 row.height() as f64,
                 max_tilt_degrees,
             );
-            row.imp().target_x.set(tx);
-            row.imp().target_y.set(ty);
+            row.imp().target_x.set(tx - row.imp().hover_tilt.get());
+            row.imp()
+                .target_y
+                .set(ty + row.imp().hover_tilt.get() * 0.5);
             animate_tilt(&row);
         });
         let weak = row.downgrade();
         motion.connect_leave(move |_| {
             if let Some(row) = weak.upgrade() {
+                row.imp().target_lift.set(0.0);
                 row.imp().target_x.set(0.0);
                 row.imp().target_y.set(0.0);
                 animate_tilt(&row);
@@ -163,7 +192,13 @@ fn animate_tilt(row: &BlurRow) {
         let factor = 1.0 - (-dt * 16.0).exp();
         let x = imp.tilt_x.get() + (imp.target_x.get() - imp.tilt_x.get()) * factor;
         let y = imp.tilt_y.get() + (imp.target_y.get() - imp.tilt_y.get()) * factor;
-        if (x - imp.target_x.get()).abs() < 0.01 && (y - imp.target_y.get()).abs() < 0.01 {
+        let lift = imp.lift.get() + (imp.target_lift.get() - imp.lift.get()) * factor;
+        imp.lift.set(lift);
+        if (x - imp.target_x.get()).abs() < 0.01
+            && (y - imp.target_y.get()).abs() < 0.01
+            && (lift - imp.target_lift.get()).abs() < 0.01
+        {
+            imp.lift.set(imp.target_lift.get());
             imp.tilt_x.set(imp.target_x.get());
             imp.tilt_y.set(imp.target_y.get());
             imp.ticking.set(false);

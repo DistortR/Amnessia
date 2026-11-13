@@ -104,38 +104,6 @@ pub fn wrap(button: &Button) -> Overlay {
     overlay
 }
 
-pub fn attach(button: &impl IsA<Button>) {
-    let button = button.as_ref();
-    if button.has_css_class("shine-attached")
-        || button.has_css_class("flash-edit")
-        || button.has_css_class("episode")
-        || button.has_css_class("filter-button")
-    {
-        return;
-    }
-    let Some(child) = button.child() else {
-        return;
-    };
-    button.set_child(gtk4::Widget::NONE);
-    let overlay = Overlay::new();
-    overlay.set_child(Some(&child));
-    add_shine(button, &overlay);
-    button.set_child(Some(&overlay));
-}
-
-pub fn attach_tree(widget: &impl IsA<gtk4::Widget>) {
-    let widget = widget.as_ref();
-    if let Some(button) = widget.downcast_ref::<Button>() {
-        attach(button);
-        return;
-    }
-    let mut child = widget.first_child();
-    while let Some(current) = child {
-        child = current.next_sibling();
-        attach_tree(&current);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

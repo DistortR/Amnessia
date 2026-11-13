@@ -2,15 +2,15 @@ mod background;
 mod blur;
 mod db;
 mod filters;
+mod highlight;
 mod shine;
 mod sidebar_blur;
 mod tray;
 mod typing;
 
 use gtk4::{
-    prelude::*, Application, ApplicationWindow, Box as GtkBox, Button, Calendar, CheckButton,
-    ComboBoxText, Dialog, DrawingArea, Entry, Label, Orientation, Overlay, ResponseType,
-    ScrolledWindow,
+    prelude::*, Application, ApplicationWindow, Box as GtkBox, Button, Calendar, ComboBoxText,
+    Dialog, DrawingArea, Entry, Label, Orientation, Overlay, ResponseType, ScrolledWindow,
 };
 use rusqlite::Connection;
 use std::{
@@ -18,6 +18,10 @@ use std::{
     collections::HashSet,
     rc::Rc,
 };
+
+const DEFAULT_EPISODE_COLOR: &str = "#7C4DFF";
+const EPISODE_EMOJIS: [&str; 7] = ["💼", "🏠", "🧠", "❤️", "📚", "🎯", "💡"];
+const EPISODE_COLORS: [&str; 5] = ["#7C4DFF", "#3B82F6", "#14B8A6", "#EC4899", "#F59E0B"];
 
 #[derive(Clone)]
 struct Ui {
@@ -74,13 +78,16 @@ fn refresh_flashes(ui: &Ui) {
                 let label = Label::new(Some(&title));
                 label.set_xalign(0.0);
                 label.set_hexpand(true);
+                label.set_valign(gtk4::Align::Center);
                 label.set_wrap(true);
                 if status == "resolved" {
                     label.add_css_class("resolved");
                 }
                 let importance = Label::new(Some(&"!".repeat(intensity as usize)));
                 importance.add_css_class("intensity");
+                importance.set_valign(gtk4::Align::Center);
                 let button = Button::new();
+                button.set_valign(gtk4::Align::Center);
                 let resolved = status == "resolved";
                 button.set_child(Some(&bulb(resolved)));
                 button.add_css_class("bulb-button");
@@ -103,6 +110,7 @@ fn refresh_flashes(ui: &Ui) {
                     label.set_tooltip_text(Some(&format!("Reminder: {local}")));
                 }
                 let details = GtkBox::new(Orientation::Horizontal, 12);
+                details.set_valign(gtk4::Align::Center);
                 details.append(&label);
                 if filter == "all" && (status == "resolved" || status == "faded") {
                     let badge = Label::new(Some(if status == "resolved" {
@@ -111,12 +119,15 @@ fn refresh_flashes(ui: &Ui) {
                         "Faded"
                     }));
                     badge.add_css_class("status");
+                    badge.set_valign(gtk4::Align::Center);
+                    badge.set_margin_bottom(2);
                     details.append(&badge);
                 }
                 details.append(&importance);
                 let edit = Button::new();
                 edit.add_css_class("flash-edit");
                 edit.set_hexpand(true);
+                edit.set_valign(gtk4::Align::Center);
                 edit.set_child(Some(&details));
                 edit.set_tooltip_text(Some("Edit Flash"));
                 let edit_ui = ui.clone();
@@ -136,7 +147,10 @@ fn refresh_flashes(ui: &Ui) {
                         Err(e) => show_error(&cloned, e),
                     }
                 });
-                row.append(&shine::wrap(&button));
+                let bulb = shine::wrap(&button);
+                bulb.set_valign(gtk4::Align::Center);
+                bulb.set_margin_bottom(2);
+                row.append(&bulb);
                 row.append(&edit);
                 let surface = Overlay::new();
                 surface.add_css_class("flash-surface");
@@ -156,21 +170,67 @@ fn refresh_episodes(ui: &Ui) {
     match db::episodes(&ui.db) {
         Ok(items) => {
             if ui.selected.get().is_none() {
-                ui.selected.set(items.first().map(|e| e.0));
+                ui.selected.set(items.first().map(|episode| episode.id));
             }
-            for (id, name) in items {
-                let button = Button::with_label(&name);
+            for episode in items {
+                let id = episode.id;
+                let button = Button::new();
                 button.add_css_class("episode");
+                button.set_hexpand(true);
+                let metadata = GtkBox::new(Orientation::Horizontal, 8);
+                if !episode.emoji.is_empty() {
+                    metadata.append(&Label::new(Some(&episode.emoji)));
+                }
+                if !episode.is_default {
+                    let color = Label::new(Some("●"));
+                    color.set_markup(&format!("<span foreground=\"{}\">●</span>", episode.color));
+                    metadata.append(&color);
+                }
+                let name = Label::new(Some(&episode.name));
+                name.set_valign(gtk4::Align::Center);
+                if episode.is_default {
+                    name.set_xalign(0.5);
+                    let details = gtk4::CenterBox::new();
+                    details.set_start_widget(Some(&metadata));
+                    details.set_center_widget(Some(&name));
+                    button.set_child(Some(&details));
+                } else {
+                    name.set_xalign(0.0);
+                    name.set_hexpand(true);
+                    let details = GtkBox::new(Orientation::Horizontal, 8);
+                    details.append(&metadata);
+                    details.append(&name);
+                    button.set_child(Some(&details));
+                }
                 if ui.selected.get() == Some(id) {
                     button.add_css_class("selected-episode");
-                    ui.title.set_text(&name);
+                    let title = if episode.emoji.is_empty() {
+                        episode.name.clone()
+                    } else {
+                        format!("{} {}", episode.emoji, episode.name)
+                    };
+                    ui.title.set_text(&title);
                 }
                 let cloned = ui.clone();
                 button.connect_clicked(move |_| {
                     cloned.selected.set(Some(id));
                     refresh_episodes(&cloned);
                 });
-                ui.episodes.append(&blur::BlurRow::new(&button, false, 4.0));
+
+                let row = GtkBox::new(Orientation::Horizontal, 4);
+                row.append(&button);
+                if !episode.is_default {
+                    let edit = Button::with_label("✎");
+                    edit.add_css_class("episode-edit");
+                    edit.set_tooltip_text(Some("Edit Episode emoji and color"));
+                    edit.update_property(&[gtk4::accessible::Property::Label(
+                        "Edit Episode emoji and color",
+                    )]);
+                    let edit_ui = ui.clone();
+                    edit.connect_clicked(move |_| episode_dialog(&edit_ui, Some(episode.clone())));
+                    row.append(&edit);
+                }
+                ui.episodes.append(&blur::BlurRow::new(&row, false, 10.0));
             }
             refresh_flashes(ui);
         }
@@ -212,53 +272,463 @@ fn bulb(on: bool) -> DrawingArea {
     area
 }
 
-fn episode_dialog(ui: &Ui) {
+fn icon_text(text: &str, icon: &str) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, 8);
+    row.set_valign(gtk4::Align::Center);
+    let image = gtk4::Image::from_icon_name(icon);
+    image.set_pixel_size(16);
+    row.append(&image);
+    let label = Label::new(Some(text));
+    label.set_xalign(0.0);
+    row.append(&label);
+    row
+}
+
+fn button_icon(button: &Button, text: &str, icon: &str) {
+    let row = icon_text(text, icon);
+    row.set_halign(gtk4::Align::Center);
+    button.set_child(Some(&row));
+}
+
+fn popup_label(text: &str) -> GtkBox {
+    let icon = match text {
+        "NAME" => "document-edit-symbolic",
+        "ICON" => "face-smile-symbolic",
+        "COLOR" => "applications-graphics-symbolic",
+        "INTENSITY" => "weather-storm-symbolic",
+        _ => "alarm-symbolic",
+    };
+    let row = icon_text(text, icon);
+    row.add_css_class("popup-label");
+    row
+}
+
+fn dismiss_popup(dialog: &Dialog) {
+    dialog.set_modal(false);
+    dialog.close();
+}
+
+fn present_popup(dialog: &Dialog) {
+    let Some(parent) = dialog.transient_for() else {
+        return;
+    };
+    let Some(overlay) = parent
+        .child()
+        .and_then(|child| child.downcast::<Overlay>().ok())
+    else {
+        return;
+    };
+    // The scene excludes popup overlays, so a live backdrop cannot capture itself.
+    let Some(scene) = overlay.child() else {
+        return;
+    };
+    let glass = sidebar_blur::SidebarBlur::new(&scene, 11.0).with_blur_radius(24.0);
+    let Some(frame) = dialog.child() else {
+        return;
+    };
+    dialog.set_child(gtk4::Widget::NONE);
+    frame.add_css_class("reference-dialog");
+    let card = Overlay::new();
+    card.set_halign(gtk4::Align::Center);
+    card.set_valign(gtk4::Align::Center);
+    card.set_size_request(dialog.default_size().0, -1);
+    card.set_child(Some(&glass));
+    card.add_overlay(&frame);
+    card.set_measure_overlay(&frame, true);
+    let shield = GtkBox::new(Orientation::Vertical, 0);
+    shield.add_css_class("popup-scrim");
+    shield.set_hexpand(true);
+    shield.set_vexpand(true);
+    overlay.add_overlay(&shield);
+    overlay.add_overlay(&card);
+    let click = gtk4::GestureClick::new();
+    let weak_card = card.downgrade();
+    click.connect_pressed(move |_, _, _, _| {
+        if let Some(card) = weak_card.upgrade() {
+            card.child_focus(gtk4::DirectionType::TabForward);
+        }
+    });
+    shield.add_controller(click);
+    let keys = gtk4::EventControllerKey::new();
+    keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    let controller_dialog = dialog.clone();
+    let weak_parent = parent.downgrade();
+    let weak_card = card.downgrade();
+    let handler = keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk4::gdk::Key::Escape {
+            controller_dialog.response(ResponseType::Cancel);
+            return gtk4::glib::Propagation::Stop;
+        }
+        if let (Some(parent), Some(card)) = (weak_parent.upgrade(), weak_card.upgrade()) {
+            if gtk4::prelude::GtkWindowExt::focus(&parent)
+                .is_some_and(|focus| focus.is_ancestor(&card))
+            {
+                return gtk4::glib::Propagation::Proceed;
+            }
+            card.child_focus(gtk4::DirectionType::TabForward);
+        }
+        gtk4::glib::Propagation::Stop
+    });
+    parent.add_controller(keys.clone());
+    let handler = RefCell::new(Some(handler));
+    let weak_parent = parent.downgrade();
+    let weak_overlay = overlay.downgrade();
+    dialog.connect_modal_notify(move |dialog| {
+        if dialog.is_modal() {
+            return;
+        }
+        if let Some(overlay) = weak_overlay.upgrade() {
+            overlay.remove_overlay(&card);
+            overlay.remove_overlay(&shield);
+        }
+        if let Some(parent) = weak_parent.upgrade() {
+            parent.remove_controller(&keys);
+        }
+        if let Some(handler) = handler.borrow_mut().take() {
+            keys.disconnect(handler);
+        }
+    });
+    let mut widgets = vec![frame];
+    while let Some(widget) = widgets.pop() {
+        if let Some(entry) = widget.downcast_ref::<Entry>() {
+            let weak_dialog = dialog.downgrade();
+            entry.set_activates_default(false);
+            entry.connect_activate(move |_| {
+                if let Some(dialog) = weak_dialog.upgrade() {
+                    dialog.response(ResponseType::Accept);
+                }
+            });
+        }
+        let mut child = widget.first_child();
+        while let Some(next) = child {
+            child = next.next_sibling();
+            widgets.push(next);
+        }
+    }
+    // The dialog remains an unmapped response controller; GTK paints the popup in the main window.
+    if let Some(card) = overlay.last_child() {
+        card.child_focus(gtk4::DirectionType::TabForward);
+    }
+}
+
+fn popup_content(dialog: &Dialog, width: i32, heading: &str) -> GtkBox {
+    dialog.add_css_class("reference-dialog");
+    dialog.set_decorated(false);
+    dialog.set_default_size(width, -1);
+    let root = dialog.content_area();
+    root.set_spacing(0);
+    root.set_margin_top(16);
+    root.set_margin_bottom(16);
+    root.set_margin_start(16);
+    root.set_margin_end(16);
+    let content = GtkBox::new(Orientation::Vertical, 0);
+    let header = icon_text(
+        heading,
+        if heading.contains("Episode") {
+            "folder-symbolic"
+        } else {
+            "weather-storm-symbolic"
+        },
+    );
+    header.add_css_class("popup-heading");
+    content.append(&header);
+    root.append(&content);
+    content
+}
+
+fn dialog_actions(dialog: &Dialog, shine_create: bool) {
+    let footer = GtkBox::new(Orientation::Horizontal, 16);
+    footer.add_css_class("popup-footer");
+    footer.set_halign(gtk4::Align::End);
+    for (response, class) in [
+        (ResponseType::Cancel, "dialog-cancel"),
+        (ResponseType::Accept, "dialog-primary"),
+    ] {
+        if let Some(widget) = dialog.widget_for_response(response) {
+            if let Ok(button) = widget.downcast::<Button>() {
+                if let Some(parent) = button.parent().and_then(|p| p.downcast::<GtkBox>().ok()) {
+                    parent.remove(&button);
+                    if parent.first_child().is_none() {
+                        parent.set_visible(false);
+                    }
+                    let text = button.label().unwrap_or_default();
+                    button_icon(
+                        &button,
+                        &text,
+                        if response == ResponseType::Cancel {
+                            "window-close-symbolic"
+                        } else if shine_create {
+                            "list-add-symbolic"
+                        } else {
+                            "document-save-symbolic"
+                        },
+                    );
+                    button.add_css_class(class);
+                    button.set_size_request(96, 38);
+                    if response == ResponseType::Accept && shine_create {
+                        footer.append(&shine::wrap(&button));
+                    } else {
+                        footer.append(&button);
+                    }
+                }
+            }
+        }
+    }
+    let divider = gtk4::Separator::new(Orientation::Horizontal);
+    divider.add_css_class("popup-divider");
+    dialog.content_area().append(&divider);
+    dialog.content_area().append(&footer);
+}
+
+fn rgba_hex(color: &gtk4::gdk::RGBA) -> String {
+    format!(
+        "#{:02X}{:02X}{:02X}",
+        (color.red() * 255.0).round() as u8,
+        (color.green() * 255.0).round() as u8,
+        (color.blue() * 255.0).round() as u8
+    )
+}
+
+fn calendar_label(calendar: &Calendar) -> String {
+    calendar
+        .date()
+        .format("%m/%d/%Y")
+        .map(|date| date.to_string())
+        .unwrap_or_else(|_| "Choose date".into())
+}
+
+fn episode_dialog(ui: &Ui, existing: Option<db::Episode>) {
+    let editing = existing.is_some();
     let dialog = Dialog::with_buttons(
-        Some("New Episode"),
+        Some(if editing {
+            "Customize Episode"
+        } else {
+            "New Episode"
+        }),
         Some(&ui.window),
         gtk4::DialogFlags::MODAL,
         &[
             ("Cancel", ResponseType::Cancel),
-            ("Create", ResponseType::Accept),
+            (
+                if editing { "Save" } else { "Create" },
+                ResponseType::Accept,
+            ),
         ],
     );
-    let content = dialog.content_area();
-    content.set_spacing(12);
-    content.set_margin_top(20);
-    content.set_margin_bottom(20);
-    content.set_margin_start(20);
-    content.set_margin_end(20);
-    let entry = Entry::new();
-    entry.set_placeholder_text(Some("Episode name"));
-    entry.set_activates_default(true);
-    content.append(&entry);
+    let content = popup_content(
+        &dialog,
+        320,
+        if editing {
+            "Edit Episode"
+        } else {
+            "New Episode"
+        },
+    );
+    content.append(&popup_label("NAME"));
+    let name = Entry::new();
+    name.set_placeholder_text(Some("What's this episode about?"));
+    name.set_activates_default(true);
+    if let Some(episode) = existing.as_ref() {
+        name.set_text(&episode.name);
+    }
+    content.append(&name);
+
+    let icons = GtkBox::new(Orientation::Vertical, 8);
+    icons.add_css_class("popup-section");
+    icons.append(&popup_label("ICON"));
+    let icon_grid = gtk4::Grid::new();
+    icon_grid.set_column_spacing(12);
+    icon_grid.set_row_spacing(8);
+    icon_grid.set_column_homogeneous(true);
+    let selected_emoji = Rc::new(RefCell::new(
+        existing
+            .as_ref()
+            .map(|episode| episode.emoji.clone())
+            .unwrap_or_default(),
+    ));
+    let mut icon_buttons: Vec<gtk4::ToggleButton> = Vec::new();
+    for (index, emoji) in EPISODE_EMOJIS.iter().enumerate() {
+        let button = gtk4::ToggleButton::with_label(emoji);
+        button.add_css_class("episode-icon");
+        button.set_size_request(48, 48);
+        if let Some(first) = icon_buttons.first() {
+            button.set_group(Some(first));
+        }
+        button.set_active(selected_emoji.borrow().as_str() == *emoji);
+        let choice = (*emoji).to_string();
+        let selection = selected_emoji.clone();
+        button.connect_toggled(move |button| {
+            if button.is_active() {
+                *selection.borrow_mut() = choice.clone();
+            }
+        });
+        icon_grid.attach(&button, index as i32 % 4, index as i32 / 4, 1, 1);
+        icon_buttons.push(button);
+    }
+    let custom_emoji = gtk4::ToggleButton::with_label("…");
+    custom_emoji.add_css_class("episode-icon");
+    custom_emoji.set_size_request(48, 48);
+    if let Some(first) = icon_buttons.first() {
+        custom_emoji.set_group(Some(first));
+    }
+    let initial_emoji = selected_emoji.borrow().clone();
+    let custom_icon_selected =
+        !initial_emoji.is_empty() && !EPISODE_EMOJIS.contains(&initial_emoji.as_str());
+    if custom_icon_selected {
+        custom_emoji.set_label(&initial_emoji);
+        custom_emoji.set_active(true);
+    }
+    let chooser = gtk4::EmojiChooser::new();
+    chooser.set_parent(&custom_emoji);
+    let custom_emoji_ref = custom_emoji.downgrade();
+    let selected_emoji_ref = selected_emoji.clone();
+    chooser.connect_emoji_picked(move |chooser, picked| {
+        if let Some(button) = custom_emoji_ref.upgrade() {
+            button.set_label(picked);
+            button.set_active(true);
+        }
+        *selected_emoji_ref.borrow_mut() = picked.to_string();
+        chooser.popdown();
+    });
+    let chooser_ref = chooser.downgrade();
+    custom_emoji.connect_clicked(move |button| {
+        button.set_active(true);
+        if let Some(chooser) = chooser_ref.upgrade() {
+            chooser.popup();
+        }
+    });
+    icon_grid.attach(&custom_emoji, 3, 1, 1, 1);
+    icons.append(&icon_grid);
+    content.append(&icons);
+
+    let color_section = GtkBox::new(Orientation::Vertical, 8);
+    color_section.add_css_class("popup-section");
+    color_section.append(&popup_label("COLOR"));
+    let color_row = GtkBox::new(Orientation::Horizontal, 10);
+    let color_dialog = gtk4::ColorDialog::builder().with_alpha(false).build();
+    let color_button = gtk4::ColorDialogButton::new(Some(color_dialog));
+    color_button.add_css_class("episode-color-picker");
+    color_button.set_size_request(36, 30);
+    color_button.set_tooltip_text(Some("Choose a custom color"));
+    color_button.update_property(&[gtk4::accessible::Property::Label(
+        "Choose a custom Episode color",
+    )]);
+    let custom_color = Overlay::new();
+    custom_color.add_css_class("episode-color-custom");
+    custom_color.set_overflow(gtk4::Overflow::Hidden);
+    custom_color.set_child(Some(&color_button));
+    let brush = gtk4::Image::from_icon_name("draw-brush-symbolic");
+    brush.set_can_target(false);
+    custom_color.add_overlay(&brush);
+    custom_color.set_size_request(36, 30);
+    let initial_color = existing
+        .as_ref()
+        .map(|episode| episode.color.as_str())
+        .unwrap_or(DEFAULT_EPISODE_COLOR);
+    let initial_rgba = gtk4::gdk::RGBA::parse(initial_color).unwrap_or(gtk4::gdk::RGBA::new(
+        124.0 / 255.0,
+        77.0 / 255.0,
+        255.0 / 255.0,
+        1.0,
+    ));
+    color_button.set_rgba(&initial_rgba);
+    let mut color_buttons: Vec<gtk4::ToggleButton> = Vec::new();
+    for (index, color) in EPISODE_COLORS.iter().enumerate() {
+        let button = gtk4::ToggleButton::new();
+        button.add_css_class("episode-color-swatch");
+        button.add_css_class(&format!("episode-color-{index}"));
+        button.set_size_request(36, 30);
+        button.set_tooltip_text(Some(color));
+        if let Some(first) = color_buttons.first() {
+            button.set_group(Some(first));
+        }
+        button.set_active(color.eq_ignore_ascii_case(initial_color));
+        color_row.append(&button);
+        color_buttons.push(button);
+    }
+    let custom_color_selected = !EPISODE_COLORS
+        .iter()
+        .any(|color| color.eq_ignore_ascii_case(initial_color));
+    if custom_color_selected {
+        custom_color.add_css_class("selected-color");
+    }
+    let changing_preset = Rc::new(Cell::new(false));
+    for (button, color) in color_buttons.iter().zip(EPISODE_COLORS) {
+        let picker = color_button.clone();
+        let custom = custom_color.downgrade();
+        let changing_preset = changing_preset.clone();
+        button.connect_toggled(move |button| {
+            if !button.is_active() {
+                return;
+            }
+            if let Some(custom) = custom.upgrade() {
+                custom.remove_css_class("selected-color");
+            }
+            changing_preset.set(true);
+            if let Ok(color) = gtk4::gdk::RGBA::parse(color) {
+                picker.set_rgba(&color);
+            }
+            changing_preset.set(false);
+        });
+    }
+    let weak_presets = color_buttons
+        .iter()
+        .map(|button| button.downgrade())
+        .collect::<Vec<_>>();
+    let custom_color_ref = custom_color.downgrade();
+    color_button.connect_rgba_notify(move |_| {
+        if changing_preset.get() {
+            return;
+        }
+        for button in &weak_presets {
+            if let Some(button) = button.upgrade() {
+                button.set_active(false);
+            }
+        }
+        if let Some(custom) = custom_color_ref.upgrade() {
+            custom.add_css_class("selected-color");
+        }
+    });
+    color_row.append(&custom_color);
+    color_section.append(&color_row);
+    content.append(&color_section);
+
     let error = Label::new(None);
     error.add_css_class("error");
     error.set_wrap(true);
     content.append(&error);
     dialog.set_default_response(ResponseType::Accept);
+    dialog_actions(&dialog, !editing);
     let ui = ui.clone();
     dialog.connect_response(move |dialog, response| {
         if response != ResponseType::Accept {
-            dialog.close();
+            dismiss_popup(dialog);
             return;
         }
-        let name = entry.text();
+        let emoji = selected_emoji.borrow().clone();
+        let color = rgba_hex(&color_button.rgba());
+        let name = name.text();
         if name.trim().is_empty() {
             error.set_text("Enter an Episode name.");
             return;
         }
-        match db::add_episode(&ui.db, &name) {
+        let result = if let Some(episode) = existing.as_ref() {
+            db::update_episode(&ui.db, episode.id, &name, &emoji, &color)
+        } else {
+            db::add_episode(&ui.db, &name, &emoji, &color)
+        };
+        match result {
             Ok(()) => {
-                ui.selected.set(Some(ui.db.last_insert_rowid()));
+                if !editing {
+                    ui.selected.set(Some(ui.db.last_insert_rowid()));
+                }
                 refresh_episodes(&ui);
-                dialog.close();
+                dismiss_popup(dialog);
             }
             Err(e) => error.set_text(&e.to_string()),
         }
     });
-    shine::attach_tree(&dialog);
-    dialog.present();
+    present_popup(&dialog);
 }
 
 fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
@@ -266,66 +736,139 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
         show_error(ui, "Select an Episode first.");
         return;
     };
+    let editing = existing.is_some();
     let dialog = Dialog::with_buttons(
-        Some(if existing.is_some() {
-            "Edit Flash"
-        } else {
-            "New Flash"
-        }),
+        Some(if editing { "Edit Flash" } else { "New Flash" }),
         Some(&ui.window),
         gtk4::DialogFlags::MODAL,
         &[
             ("Cancel", ResponseType::Cancel),
             (
-                if existing.is_some() { "Save" } else { "Create" },
+                if editing { "Save" } else { "Create" },
                 ResponseType::Accept,
             ),
         ],
     );
-    let content = dialog.content_area();
-    content.set_spacing(10);
-    content.set_margin_top(20);
-    content.set_margin_bottom(20);
-    content.set_margin_start(20);
-    content.set_margin_end(20);
+    let content = popup_content(
+        &dialog,
+        500,
+        if editing { "Edit Flash" } else { "New Flash" },
+    );
+    content.append(&popup_label("NAME"));
+
     let title = Entry::new();
-    title.set_placeholder_text(Some("Flash name"));
+    title.set_placeholder_text(Some("I swear i wont forget"));
     title.set_activates_default(true);
-    dialog.set_default_response(ResponseType::Accept);
     content.append(&title);
-    let intensity = ComboBoxText::new();
-    for text in ["! Dim", "!! Bright", "!!! Storbe"] {
-        intensity.append_text(text);
-    }
-    intensity.set_active(Some(
-        existing.as_ref().map_or(0, |f| u32::from(f.intensity - 1)),
-    ));
-    let label = Label::new(Some("Intensity"));
-    label.set_xalign(0.0);
-    content.append(&label);
-    content.append(&intensity);
-    let reminder = CheckButton::with_label("Set a reminder");
-    content.append(&reminder);
+
+    let intensity_label = popup_label("INTENSITY");
+    intensity_label.add_css_class("popup-section");
+    content.append(&intensity_label);
+    let intensity = highlight::HighlightSelector::new(
+        &["Dim", "Bright", "Storbe"],
+        existing
+            .as_ref()
+            .map_or(0, |flash| usize::from(flash.intensity - 1)),
+    );
+    intensity.set_icons(&[
+        "display-brightness-symbolic",
+        "weather-clear-symbolic",
+        "weather-storm-symbolic",
+    ]);
+    intensity.connect_changed(|| {});
+    intensity.widget.add_css_class("popup-selector");
+    content.append(&intensity.widget);
+
     let calendar = Calendar::new();
-    calendar.set_sensitive(false);
-    content.append(&calendar);
-    let time = Entry::new();
-    time.set_placeholder_text(Some("Time (24-hour HH:MM)"));
-    time.set_sensitive(false);
-    content.append(&time);
-    let cal = calendar.clone();
-    let clock = time.clone();
-    reminder.connect_toggled(move |check| {
-        cal.set_sensitive(check.is_active());
-        clock.set_sensitive(check.is_active());
+    let date_picker = Button::with_label(&calendar_label(&calendar));
+    button_icon(
+        &date_picker,
+        &calendar_label(&calendar),
+        "x-office-calendar-symbolic",
+    );
+    date_picker.add_css_class("date-picker");
+    date_picker.set_hexpand(false);
+    date_picker.set_size_request(204, 38);
+    let calendar_popover = gtk4::Popover::new();
+    calendar_popover.set_child(Some(&calendar));
+    calendar_popover.set_parent(&date_picker);
+    let calendar_popover_ref = calendar_popover.downgrade();
+    date_picker.connect_clicked(move |_| {
+        if let Some(popover) = calendar_popover_ref.upgrade() {
+            popover.popup();
+        }
     });
-    if let Some(flash) = &existing {
+    let date_picker_ref = date_picker.downgrade();
+    let calendar_popover_ref = calendar_popover.downgrade();
+    calendar.connect_day_selected(move |calendar| {
+        if let Some(button) = date_picker_ref.upgrade() {
+            button_icon(
+                &button,
+                &calendar_label(calendar),
+                "x-office-calendar-symbolic",
+            );
+        }
+        if let Some(popover) = calendar_popover_ref.upgrade() {
+            popover.popdown();
+        }
+    });
+
+    let time = Entry::new();
+    time.set_placeholder_text(Some("Time (HH:MM)"));
+    time.set_text("09:00");
+    time.set_icon_from_icon_name(
+        gtk4::EntryIconPosition::Secondary,
+        Some("preferences-system-time-symbolic"),
+    );
+    gtk4::prelude::EntryExt::set_alignment(&time, 0.5);
+    time.set_hexpand(false);
+    time.set_size_request(204, 38);
+
+    let date_switch = gtk4::Switch::new();
+    date_switch.add_css_class("reminder-switch");
+    let date_name = Label::new(Some("Date"));
+    let date_left = GtkBox::new(Orientation::Horizontal, 8);
+    date_left.append(&date_switch);
+    date_left.append(&date_name);
+    date_left.set_hexpand(true);
+    date_switch.set_valign(gtk4::Align::Center);
+    let date_row = GtkBox::new(Orientation::Horizontal, 14);
+    date_row.add_css_class("date-time-row");
+    date_row.append(&date_left);
+    date_row.append(&date_picker);
+    let date_time = GtkBox::new(Orientation::Vertical, 6);
+    date_time.set_margin_top(12);
+    date_time.add_css_class("date-time-controls");
+    date_time.append(&date_row);
+
+    let time_switch = gtk4::Switch::new();
+    time_switch.add_css_class("reminder-switch");
+    let time_name = Label::new(Some("Time"));
+    let time_left = GtkBox::new(Orientation::Horizontal, 8);
+    time_left.append(&time_switch);
+    time_left.append(&time_name);
+    time_left.set_hexpand(true);
+    time_switch.set_valign(gtk4::Align::Center);
+    let time_row = GtkBox::new(Orientation::Horizontal, 14);
+    time_row.add_css_class("date-time-row");
+    time_row.append(&time_left);
+    time_row.append(&time);
+    date_time.append(&time_row);
+    content.append(&date_time);
+
+    if let Some(flash) = existing.as_ref() {
         title.set_text(&flash.title);
         if let Some(due) = &flash.due_at {
             match gtk4::glib::DateTime::from_iso8601(due, None).and_then(|d| d.to_local()) {
                 Ok(local) => {
-                    reminder.set_active(true);
+                    date_switch.set_active(true);
+                    time_switch.set_active(true);
                     calendar.select_day(&local);
+                    button_icon(
+                        &date_picker,
+                        &calendar_label(&calendar),
+                        "x-office-calendar-symbolic",
+                    );
                     if let Ok(formatted) = local.format("%H:%M") {
                         time.set_text(&formatted);
                     }
@@ -337,14 +880,151 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
             }
         }
     }
+    date_picker.set_sensitive(date_switch.is_active());
+    time.set_sensitive(time_switch.is_active());
+    let time_switch_ref = time_switch.downgrade();
+    date_switch.connect_active_notify(move |date_switch| {
+        if !date_switch.is_active() {
+            if let Some(time_switch) = time_switch_ref.upgrade() {
+                time_switch.set_active(false);
+            }
+        }
+    });
+    let date_switch_ref = date_switch.downgrade();
+    time_switch.connect_active_notify(move |time_switch| {
+        if time_switch.is_active() {
+            if let Some(date_switch) = date_switch_ref.upgrade() {
+                date_switch.set_active(true);
+            }
+        }
+    });
+    let date_picker_ref = date_picker.downgrade();
+    date_switch.connect_active_notify(move |date_switch| {
+        if let Some(button) = date_picker_ref.upgrade() {
+            button.set_sensitive(date_switch.is_active());
+        }
+    });
+    let time_ref = time.downgrade();
+    time_switch.connect_active_notify(move |time_switch| {
+        if let Some(entry) = time_ref.upgrade() {
+            entry.set_sensitive(time_switch.is_active());
+        }
+    });
+
+    let earlier = GtkBox::new(Orientation::Vertical, 8);
+    earlier.add_css_class("popup-section");
+    let earlier_label = popup_label("REMIND ME EARLIER");
+    earlier.append(&earlier_label);
+    let earlier_grid = gtk4::Grid::new();
+    earlier_grid.set_column_spacing(8);
+    earlier_grid.set_row_spacing(8);
+    earlier_grid.set_column_homogeneous(true);
+    for (index, label) in ["5 min", "15 min", "30 min", "1 hour", "1 day", "Custom"]
+        .iter()
+        .enumerate()
+    {
+        let button = gtk4::ToggleButton::with_label(label);
+        button.add_css_class("reminder-option");
+        button.set_size_request(80, 32);
+        if index == 5 {
+            button.add_css_class("reminder-custom");
+        }
+        let tilted = blur::BlurRow::new(&button, false, 6.0)
+            .with_hover_lift(4.0)
+            .with_hover_tilt(10.0);
+        tilted.set_overflow(gtk4::Overflow::Visible);
+        earlier_grid.attach(&tilted, index as i32 % 4, index as i32 / 4, 1, 1);
+    }
+    earlier.append(&earlier_grid);
+    content.append(&earlier);
+
+    let repeat_switch = gtk4::Switch::new();
+    repeat_switch.add_css_class("reminder-switch");
+    let repeat_label = icon_text("Repeat", "media-playlist-repeat-symbolic");
+    let repeat_header = GtkBox::new(Orientation::Horizontal, 8);
+    repeat_header.set_margin_top(12);
+    repeat_header.set_margin_bottom(10);
+    repeat_switch.set_valign(gtk4::Align::Center);
+    repeat_header.append(&repeat_switch);
+    repeat_header.append(&repeat_label);
+    content.append(&repeat_header);
+
+    let repeat_modes = highlight::HighlightSelector::new(&["By time", "By weekdays"], 0);
+    repeat_modes.set_icons(&["alarm-symbolic", "x-office-calendar-symbolic"]);
+    repeat_modes.widget.add_css_class("popup-selector");
+    let repeat_stack = gtk4::Stack::new();
+    repeat_stack.set_margin_top(10);
+    repeat_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+    repeat_stack.set_transition_duration(160);
+    let every = GtkBox::new(Orientation::Horizontal, 8);
+    every.set_valign(gtk4::Align::Center);
+    every.append(&Label::new(Some("Every")));
+    let interval = gtk4::SpinButton::with_range(1.0, 365.0, 1.0);
+    interval.set_value(2.0);
+    interval.set_size_request(64, 32);
+    let unit = ComboBoxText::new();
+    for value in ["minutes", "hours", "days", "weeks"] {
+        unit.append_text(value);
+    }
+    unit.set_active(Some(1));
+    every.append(&interval);
+    every.append(&unit);
+    repeat_stack.add_named(&every, Some("time"));
+
+    let weekdays = GtkBox::new(Orientation::Horizontal, 8);
+    weekdays.set_homogeneous(true);
+    let day_names = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
+    for (day, name) in ["M", "T", "W", "T", "F", "S", "S"].iter().zip(day_names) {
+        let button = gtk4::ToggleButton::with_label(day);
+        button.add_css_class("weekday-button");
+        button.set_size_request(32, 32);
+        button.set_tooltip_text(Some(name));
+        button.update_property(&[gtk4::accessible::Property::Label(name)]);
+        let tilted = blur::BlurRow::new(&button, false, 6.0).with_hover_tilt(8.0);
+        weekdays.append(&tilted);
+    }
+    repeat_stack.add_named(&weekdays, Some("weekdays"));
+    let repeat_controls = GtkBox::new(Orientation::Vertical, 8);
+    repeat_controls.append(&repeat_modes.widget);
+    repeat_controls.append(&repeat_stack);
+    repeat_controls.set_sensitive(false);
+    content.append(&repeat_controls);
+    let repeat_stack_ref = repeat_stack.downgrade();
+    let repeat_modes_ref = repeat_modes.clone();
+    repeat_modes.connect_changed(move || {
+        if let Some(stack) = repeat_stack_ref.upgrade() {
+            stack.set_visible_child_name(if repeat_modes_ref.selected() == 0 {
+                "time"
+            } else {
+                "weekdays"
+            });
+        }
+    });
+    let repeat_controls_ref = repeat_controls.downgrade();
+    repeat_switch.connect_active_notify(move |switch| {
+        if let Some(controls) = repeat_controls_ref.upgrade() {
+            controls.set_sensitive(switch.is_active());
+        }
+    });
+
     let error = Label::new(None);
     error.add_css_class("error");
     error.set_wrap(true);
     content.append(&error);
+    dialog.set_default_response(ResponseType::Accept);
+    dialog_actions(&dialog, !editing);
     let ui = ui.clone();
     dialog.connect_response(move |dialog, response| {
         if response != ResponseType::Accept {
-            dialog.close();
+            dismiss_popup(dialog);
             return;
         }
         let name = title.text();
@@ -352,8 +1032,12 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
             error.set_text("Enter a Flash name.");
             return;
         }
-        let due = if reminder.is_active() {
-            let text = time.text();
+        let due = if date_switch.is_active() {
+            let text = if time_switch.is_active() {
+                time.text().to_string()
+            } else {
+                "09:00".to_string()
+            };
             let parts: Vec<_> = text.split(':').collect();
             let valid = parts.len() == 2
                 && parts[0].len() == 2
@@ -390,14 +1074,17 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
             };
             let unchanged = existing
                 .as_ref()
-                .and_then(|f| f.due_at.as_deref())
+                .and_then(|flash| flash.due_at.as_deref())
                 .and_then(|due| gtk4::glib::DateTime::from_iso8601(due, None).ok())
                 .is_some_and(|old| old.to_unix() == when.to_unix());
             if !unchanged && when.to_unix() <= now.to_unix() {
                 error.set_text("Choose a future reminder date and time.");
                 return;
             }
-            match when.to_utc().and_then(|d| d.format("%Y-%m-%dT%H:%M:%SZ")) {
+            match when
+                .to_utc()
+                .and_then(|date| date.format("%Y-%m-%dT%H:%M:%SZ"))
+            {
                 Ok(date) => Some(date.to_string()),
                 Err(e) => {
                     error.set_text(&e.to_string());
@@ -407,33 +1094,21 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
         } else {
             None
         };
+        let intensity = intensity.selected() as u8 + 1;
         let result = if let Some(flash) = &existing {
-            db::update_flash(
-                &ui.db,
-                flash.id,
-                &name,
-                due.as_deref(),
-                intensity.active().unwrap_or(0) as u8 + 1,
-            )
+            db::update_flash(&ui.db, flash.id, &name, due.as_deref(), intensity)
         } else {
-            db::add_flash(
-                &ui.db,
-                episode,
-                &name,
-                due.as_deref(),
-                intensity.active().unwrap_or(0) as u8 + 1,
-            )
+            db::add_flash(&ui.db, episode, &name, due.as_deref(), intensity)
         };
         match result {
             Ok(()) => {
                 refresh_flashes(&ui);
-                dialog.close();
+                dismiss_popup(dialog);
             }
             Err(e) => error.set_text(&e.to_string()),
         }
     });
-    shine::attach_tree(&dialog);
-    dialog.present();
+    present_popup(&dialog);
 }
 
 thread_local! { static HOLD: std::cell::RefCell<Option<gtk4::gio::ApplicationHoldGuard>> = const { std::cell::RefCell::new(None) }; }
@@ -572,8 +1247,10 @@ fn build(app: &Application) {
     side.set_width_request(240);
     let brand = GtkBox::new(Orientation::Horizontal, 2);
     brand.add_css_class("brand");
+    brand.set_margin_top(8);
+    brand.set_margin_start(8);
     let loader = gtk4::gdk_pixbuf::PixbufLoader::new();
-    loader.set_size(34, 34);
+    loader.set_size(42, 42);
     let logo = match loader
         .write(include_bytes!("../assets/com.amnessia.App.svg"))
         .and_then(|_| loader.close())
@@ -584,14 +1261,14 @@ fn build(app: &Application) {
             gtk4::Image::new()
         }
     };
-    logo.set_pixel_size(34);
+    logo.set_pixel_size(42);
     logo.set_margin_bottom(3);
     logo.update_property(&[gtk4::accessible::Property::Label("Amnessia logo")]);
     brand.append(&logo);
     let brand_name = Label::new(Some("mnessia"));
     brand_name.set_xalign(0.0);
     brand_name.set_valign(gtk4::Align::End);
-    brand_name.set_margin_bottom(0);
+    brand_name.set_margin_bottom(1);
     brand.append(&brand_name);
     side.append(&brand);
     let heading = Label::new(Some("EPISODES"));
@@ -659,7 +1336,9 @@ fn build(app: &Application) {
     root.append(&side_overlay);
     root.append(&content);
     overlay.add_overlay(&root);
-    window.set_child(Some(&overlay));
+    let popup_layer = Overlay::new();
+    popup_layer.set_child(Some(&overlay));
+    window.set_child(Some(&popup_layer));
     let ui = Ui {
         db: database,
         selected: Rc::new(Cell::new(None)),
@@ -673,12 +1352,11 @@ fn build(app: &Application) {
         loaded_episodes: Rc::new(RefCell::new(HashSet::new())),
     };
     let u = ui.clone();
-    add_episode.connect_clicked(move |_| episode_dialog(&u));
+    add_episode.connect_clicked(move |_| episode_dialog(&u, None));
     let u = ui.clone();
     add_flash.connect_clicked(move |_| flash_dialog(&u, None));
     let u = ui.clone();
     ui.filter.connect_changed(move || refresh_flashes(&u));
-    shine::attach_tree(&window);
     refresh_episodes(&ui);
     HOLD.with(|hold| {
         if hold.borrow().is_none() {

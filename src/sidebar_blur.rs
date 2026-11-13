@@ -5,9 +5,10 @@ mod imp {
     use super::*;
     #[derive(Default)]
     pub struct SidebarBlur {
-        pub background: RefCell<Option<gtk4::WidgetPaintable>>,
+        pub background: RefCell<Option<gtk4::gdk::Paintable>>,
         pub source: RefCell<Option<gtk4::Widget>>,
         pub corner_radius: Cell<f32>,
+        pub blur_radius: Cell<f64>,
     }
     #[glib::object_subclass]
     impl ObjectSubclass for SidebarBlur {
@@ -45,7 +46,7 @@ mod imp {
             snapshot.push_rounded_clip(&clip);
             snapshot.save();
             snapshot.translate(&gtk4::graphene::Point::new(-origin.x(), -origin.y()));
-            snapshot.push_blur(12.0);
+            snapshot.push_blur(self.blur_radius.get());
             background.snapshot(snapshot, width as f64, height as f64);
             snapshot.pop();
             snapshot.restore();
@@ -61,6 +62,11 @@ glib::wrapper! {
 }
 
 impl SidebarBlur {
+    pub fn with_blur_radius(self, radius: f64) -> Self {
+        self.imp().blur_radius.set(radius);
+        self
+    }
+
     pub fn new(background: &impl IsA<gtk4::Widget>, corner_radius: f32) -> Self {
         let widget: Self = glib::Object::new();
         widget.set_can_target(false);
@@ -72,8 +78,9 @@ impl SidebarBlur {
                 widget.queue_draw();
             }
         });
-        widget.imp().background.replace(Some(paintable));
+        widget.imp().background.replace(Some(paintable.upcast()));
         widget.imp().source.replace(Some(background.clone()));
+        widget.imp().blur_radius.set(12.0);
         widget.imp().corner_radius.set(corner_radius);
         widget
     }

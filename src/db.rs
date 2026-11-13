@@ -38,18 +38,41 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         db.execute_batch(include_str!("../db/migrate-2-to-3.sql"))
             .map_err(|e| e.to_string())?;
     }
-    if !(1..=3).contains(&version) {
+    if version == 1 || version == 2 || version == 3 {
+        db.execute_batch(include_str!("../db/migrate-3-to-4.sql"))
+            .map_err(|e| e.to_string())?;
+    }
+    if !(1..=4).contains(&version) {
         return Err(format!(
-            "Unsupported database version {version}; expected 1, 2 or 3"
+            "Unsupported database version {version}; expected 1, 2, 3 or 4"
         ));
     }
     Ok(db)
 }
 
-pub fn episodes(db: &Connection) -> Result<Vec<(i64, String)>> {
-    db.prepare("SELECT id, name FROM episodes ORDER BY is_default DESC, position, id")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect()
+#[derive(Debug, Clone)]
+pub struct Episode {
+    pub id: i64,
+    pub name: String,
+    pub emoji: String,
+    pub color: String,
+    pub is_default: bool,
+}
+
+pub fn episodes(db: &Connection) -> Result<Vec<Episode>> {
+    db.prepare(
+        "SELECT id, name, emoji, color, is_default FROM episodes ORDER BY is_default DESC, position, id",
+    )?
+    .query_map([], |r| {
+        Ok(Episode {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            emoji: r.get(2)?,
+            color: r.get(3)?,
+                is_default: r.get(4)?,
+        })
+    })?
+    .collect()
 }
 #[derive(Debug, Clone)]
 pub struct Flash {
@@ -65,8 +88,22 @@ pub fn flashes(db: &Connection, episode: i64) -> Result<Vec<Flash>> {
         .query_map([episode], |r| Ok(Flash { id:r.get(0)?, title:r.get(1)?, status:r.get(2)?, intensity:r.get(3)?, due_at:r.get(4)? }))?.collect()
 }
 
-pub fn add_episode(db: &Connection, name: &str) -> Result<()> {
-    db.execute("INSERT INTO episodes (name, position) VALUES (?1, COALESCE((SELECT MAX(position) + 1 FROM episodes), 0))", [name.trim()])?;
+pub fn add_episode(db: &Connection, name: &str, emoji: &str, color: &str) -> Result<()> {
+    db.execute("INSERT INTO episodes (name, position, emoji, color) VALUES (?1, COALESCE((SELECT MAX(position) + 1 FROM episodes), 0), ?2, ?3)", params![name.trim(), emoji.trim(), color])?;
+    Ok(())
+}
+
+pub fn update_episode(
+    db: &Connection,
+    id: i64,
+    name: &str,
+    emoji: &str,
+    color: &str,
+) -> Result<()> {
+    db.execute(
+        "UPDATE episodes SET name = ?2, emoji = ?3, color = ?4 WHERE id = ?1 AND is_default = 0",
+        params![id, name.trim(), emoji.trim(), color],
+    )?;
     Ok(())
 }
 pub fn add_flash(
@@ -122,10 +159,11 @@ mod tests {
     fn saves_episodes_and_flash_status() {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch(include_str!("../db/schema.sql")).unwrap();
-        add_episode(&db, " Work ").unwrap();
-        assert_eq!(episodes(&db).unwrap()[0].1, "Static");
-        let (id, name) = episodes(&db).unwrap().remove(1);
-        assert_eq!(name, "Work");
+        add_episode(&db, " Work ", "", "#594187").unwrap();
+        assert_eq!(episodes(&db).unwrap()[0].name, "Static");
+        let work = episodes(&db).unwrap().remove(1);
+        let id = work.id;
+        assert_eq!(work.name, "Work");
         add_flash(&db, id, " First ", Some("2030-01-01T09:30:00Z"), 2).unwrap();
         let flash = flashes(&db, id).unwrap().remove(0);
         assert_eq!(
@@ -137,10 +175,15 @@ mod tests {
             ),
             ("First", "active", 2, Some("2030-01-01T09:30:00Z"))
         );
+        update_episode(&db, id, " Renamed ", "💡", "#3B82F6").unwrap();
+        let renamed = episodes(&db).unwrap().remove(1);
+        assert_eq!((renamed.id, renamed.name.as_str()), (id, "Renamed"));
+        assert_eq!(flashes(&db, id).unwrap()[0].id, flash.id);
+        assert!(update_episode(&db, id, " ", "", "#3B82F6").is_err());
         set_status(&db, flash.id, "resolved").unwrap();
         assert_eq!(flashes(&db, id).unwrap()[0].status, "resolved");
         assert!(add_flash(&db, 999, "orphan", None, 1).is_err());
-        assert!(add_episode(&db, " ").is_err());
+        assert!(add_episode(&db, " ", "", "#594187").is_err());
     }
     #[test]
     fn migrates_existing_database_without_moving_flashes() {
@@ -154,11 +197,11 @@ mod tests {
         {
             let db = open(&path).unwrap();
             let items = episodes(&db).unwrap();
-            assert_eq!(items[0].1, "Static");
-            assert_eq!(items[1], (10, "Work".to_string()));
+            assert_eq!(items[0].name, "Static");
+            assert_eq!((items[1].id, items[1].name.as_str()), (10, "Work"));
             assert_eq!(flashes(&db, 10).unwrap()[0].title, "Existing");
-            add_flash(&db, items[0].0, "Uncategorized", None, 1).unwrap();
-            assert_eq!(flashes(&db, items[0].0).unwrap()[0].title, "Uncategorized");
+            add_flash(&db, items[0].id, "Uncategorized", None, 1).unwrap();
+            assert_eq!(flashes(&db, items[0].id).unwrap()[0].title, "Uncategorized");
             assert!(db
                 .execute(
                     "INSERT INTO episodes (name, is_default) VALUES ('Duplicate', 1)",
@@ -176,7 +219,7 @@ mod tests {
     fn due_reminders_fade_and_are_not_sent_twice() {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch(include_str!("../db/schema.sql")).unwrap();
-        let episode = episodes(&db).unwrap()[0].0;
+        let episode = episodes(&db).unwrap()[0].id;
         add_flash(&db, episode, "Due", Some("2000-01-01T00:00:00Z"), 3).unwrap();
         add_flash(&db, episode, "Future", Some("2999-01-01T00:00:00Z"), 1).unwrap();
         add_flash(
@@ -202,7 +245,7 @@ mod tests {
     fn editing_preserves_or_reschedules_reminders() {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch(include_str!("../db/schema.sql")).unwrap();
-        let episode = episodes(&db).unwrap()[0].0;
+        let episode = episodes(&db).unwrap()[0].id;
         add_flash(&db, episode, "Before", Some("2000-01-01T00:00:00Z"), 1).unwrap();
         let id = flashes(&db, episode).unwrap()[0].id;
         fade(&db, id).unwrap();

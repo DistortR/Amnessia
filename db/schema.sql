@@ -5,7 +5,9 @@ CREATE TABLE episodes (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL CHECK (length(trim(name)) > 0),
     position INTEGER NOT NULL DEFAULT 0,
-    is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1))
+    is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+    emoji TEXT NOT NULL DEFAULT '',
+    color TEXT NOT NULL DEFAULT '#594187' CHECK (color GLOB '#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]')
 );
 
 CREATE UNIQUE INDEX one_default_episode ON episodes(is_default) WHERE is_default = 1;
@@ -24,5 +26,5 @@ CREATE TABLE flashes (
 );
 
 CREATE INDEX flashes_episode_order ON flashes(episode_id, position, id);
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 COMMIT;
