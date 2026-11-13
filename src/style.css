@@ -22,7 +22,12 @@ window { color: #edf0fa; }
 .intensity { color: #c49cff; font-weight: 800; font-size: 17px; }
 .bulb-button { padding: 4px; min-width: 28px; min-height: 28px; background: transparent; }
 .flash-edit { padding: 4px; background: transparent; box-shadow: none; border: 0; }
-.flash-edit:hover { background: rgba(189, 140, 255, 0.12); }
+.flash-edit:hover { background: transparent; }
 
 @keyframes typing-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
 .typing-cursor { animation: typing-blink 1s infinite; }
+
+.filter-selector { border-radius: 14px; background: rgba(100, 105, 120, 0.24); }
+.filter-button { border: 0; border-radius: 12px; background: transparent; box-shadow: none; padding: 6px 15px; }
+.filter-button:checked { background: transparent; box-shadow: none; }
+.light .filter-button, .light .filter-button:checked { background: transparent; }

@@ -1,6 +1,8 @@
 mod background;
 mod blur;
 mod db;
+mod filters;
+mod shine;
 mod sidebar_blur;
 mod tray;
 mod typing;
@@ -21,7 +23,7 @@ struct Ui {
     flashes: GtkBox,
     title: Label,
     window: ApplicationWindow,
-    filter: ComboBoxText,
+    filter: filters::Filters,
     error: Label,
 }
 
@@ -39,7 +41,7 @@ fn refresh_flashes(ui: &Ui) {
         ui.title.set_text("Select an Episode");
         return;
     };
-    let filter = ui.filter.active_id().unwrap_or_else(|| "all".into());
+    let filter = ui.filter.selected();
     match db::flashes(&ui.db, id).map(|items| {
         items
             .into_iter()
@@ -123,9 +125,10 @@ fn refresh_flashes(ui: &Ui) {
                         Err(e) => show_error(&cloned, e),
                     }
                 });
+                shine::attach(&button);
                 row.append(&button);
                 row.append(&edit);
-                ui.flashes.append(&blur::BlurRow::new(&row));
+                ui.flashes.append(&blur::BlurRow::new(&row, true));
             }
         }
         Err(e) => show_error(ui, e),
@@ -141,6 +144,7 @@ fn refresh_episodes(ui: &Ui) {
             for (id, name) in items {
                 let button = Button::with_label(&name);
                 button.add_css_class("episode");
+                shine::attach(&button);
                 if ui.selected.get() == Some(id) {
                     button.add_css_class("selected-episode");
                     ui.title.set_text(&name);
@@ -151,7 +155,7 @@ fn refresh_episodes(ui: &Ui) {
                     refresh_episodes(&cloned);
                     refresh_flashes(&cloned);
                 });
-                ui.episodes.append(&button);
+                ui.episodes.append(&blur::BlurRow::new(&button, false));
             }
             refresh_flashes(ui);
         }
@@ -238,6 +242,7 @@ fn episode_dialog(ui: &Ui) {
             Err(e) => error.set_text(&e.to_string()),
         }
     });
+    shine::attach_tree(&dialog);
     dialog.present();
 }
 
@@ -412,6 +417,7 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
             Err(e) => error.set_text(&e.to_string()),
         }
     });
+    shine::attach_tree(&dialog);
     dialog.present();
 }
 
@@ -620,12 +626,8 @@ fn build(app: &Application) {
     let controls = GtkBox::new(Orientation::Horizontal, 8);
     let add_flash = Button::with_label("+ Add Flash");
     controls.append(&add_flash);
-    let filter = ComboBoxText::new();
-    filter.append(Some("all"), "All");
-    filter.append(Some("resolved"), "Resolved");
-    filter.append(Some("faded"), "Faded");
-    filter.set_active_id(Some("all"));
-    controls.append(&filter);
+    let filter = filters::Filters::new();
+    controls.append(&filter.widget);
     content.append(&controls);
     let error = Label::new(None);
     error.add_css_class("error");
@@ -657,7 +659,8 @@ fn build(app: &Application) {
     let u = ui.clone();
     add_flash.connect_clicked(move |_| flash_dialog(&u, None));
     let u = ui.clone();
-    ui.filter.connect_changed(move |_| refresh_flashes(&u));
+    ui.filter.connect_changed(move || refresh_flashes(&u));
+    shine::attach_tree(&window);
     refresh_episodes(&ui);
     HOLD.with(|hold| {
         if hold.borrow().is_none() {
