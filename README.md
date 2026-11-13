@@ -1,6 +1,6 @@
 # Amnessia
 
-A Rust and GTK4 app for organizing Flashes in Episodes, with a topography background inspired by [Animate UI](https://animate-ui.com/docs/vue/backgrounds/topography).
+A Rust and GTK4 app for organizing Flashes in Episodes, with a Letter Glitch background inspired by [React Bits](https://reactbits.dev/backgrounds/letter-glitch).
 
 Run `cargo run --release`. GTK 4.10 or newer, SQLite development libraries, and `notify-send` are required. Add Flashes to the default Static Episode or create another Episode. Select a Flash to edit its name, reminder, and Intensity. Use the bulb to resolve or reopen a Flash; the filter shows All, Resolved, or Faded. The exclamation marks show Intensity.
 

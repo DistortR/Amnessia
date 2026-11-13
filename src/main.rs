@@ -1,6 +1,9 @@
 mod background;
+mod blur;
 mod db;
+mod sidebar_blur;
 mod tray;
+mod typing;
 
 use gtk4::{
     prelude::*, Application, ApplicationWindow, Box as GtkBox, Button, Calendar, CheckButton,
@@ -43,9 +46,7 @@ fn refresh_flashes(ui: &Ui) {
             .filter(|f| filter == "all" || f.status == filter)
             .collect::<Vec<_>>()
     }) {
-        Ok(items) if items.is_empty() => ui
-            .flashes
-            .append(&Label::new(Some("No Flashes yet. Add one above."))),
+        Ok(items) if items.is_empty() => ui.flashes.append(&typing::empty_message()),
         Ok(items) => {
             for flash in items {
                 let db::Flash {
@@ -124,7 +125,7 @@ fn refresh_flashes(ui: &Ui) {
                 });
                 row.append(&button);
                 row.append(&edit);
-                ui.flashes.append(&row);
+                ui.flashes.append(&blur::BlurRow::new(&row));
             }
         }
         Err(e) => show_error(ui, e),
@@ -541,6 +542,10 @@ fn build(app: &Application) {
     background::attach(&root);
     root.set_hexpand(true);
     root.set_vexpand(true);
+    let side_overlay = Overlay::new();
+    side_overlay.set_width_request(240);
+    side_overlay.set_vexpand(true);
+    side_overlay.set_child(Some(&sidebar_blur::SidebarBlur::new(&bg)));
     let side = GtkBox::new(Orientation::Vertical, 12);
     side.add_css_class("sidebar");
     side.set_width_request(240);
@@ -585,7 +590,8 @@ fn build(app: &Application) {
     let top = GtkBox::new(Orientation::Horizontal, 12);
     let toggle = Button::with_label("☰");
     toggle.set_tooltip_text(Some("Show or hide Episodes"));
-    let side_clone = side.clone();
+    side_overlay.add_overlay(&side);
+    let side_clone = side_overlay.clone();
     toggle.connect_clicked(move |_| side_clone.set_visible(!side_clone.is_visible()));
     let title = Label::new(Some("Select an Episode"));
     title.set_hexpand(true);
@@ -632,7 +638,7 @@ fn build(app: &Application) {
         .child(&flashes)
         .build();
     content.append(&flash_scroll);
-    root.append(&side);
+    root.append(&side_overlay);
     root.append(&content);
     overlay.add_overlay(&root);
     window.set_child(Some(&overlay));
@@ -687,7 +693,21 @@ fn build(app: &Application) {
     });
     window.present();
 }
+fn wayland_disabled_protocols(existing: Option<std::ffi::OsString>) -> std::ffi::OsString {
+    let mut disabled = existing.unwrap_or_default();
+    if !disabled.is_empty() {
+        disabled.push(",");
+    }
+    disabled.push("ext_background_effect_manager_v1");
+    disabled
+}
+
 fn main() {
+    // GTK otherwise asks Wayland to disable compositor blur for this window.
+    std::env::set_var(
+        "GDK_WAYLAND_DISABLE",
+        wayland_disabled_protocols(std::env::var_os("GDK_WAYLAND_DISABLE")),
+    );
     let app = Application::builder()
         .application_id("com.amnessia.App")
         .build();
@@ -698,6 +718,17 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preserves_existing_disabled_wayland_protocols() {
+        assert_eq!(
+            wayland_disabled_protocols(None),
+            "ext_background_effect_manager_v1"
+        );
+        assert_eq!(
+            wayland_disabled_protocols(Some("existing".into())),
+            "existing,ext_background_effect_manager_v1"
+        );
+    }
     #[test]
     fn notification_includes_intensity_and_date_only_for_another_day() {
         let now = gtk4::glib::DateTime::from_local(2030, 5, 12, 14, 0, 0.0).unwrap();

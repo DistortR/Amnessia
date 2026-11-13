@@ -1,248 +1,222 @@
-#![allow(dead_code)]
-use std::{
-    cell::RefCell,
-    ffi::{c_char, c_double, c_int, c_uint, c_void},
-    time::Instant,
-};
+use gtk4::prelude::*;
+use std::{cell::RefCell, collections::VecDeque, rc::Rc, time::Instant};
 
-type Ptr = *mut c_void;
-#[link(name = "gtk-4")]
-extern "C" {
-    fn gtk_init();
-    fn gtk_window_new() -> Ptr;
-    fn gtk_window_set_title(window: Ptr, title: *const c_char);
-    fn gtk_window_set_default_size(window: Ptr, width: c_int, height: c_int);
-    fn gtk_window_set_child(window: Ptr, child: Ptr);
-    fn gtk_window_present(window: Ptr);
-    fn gtk_drawing_area_new() -> Ptr;
-    fn gtk_drawing_area_set_draw_func(
-        area: Ptr,
-        callback: extern "C" fn(Ptr, Ptr, c_int, c_int, Ptr),
-        data: Ptr,
-        destroy: Ptr,
-    );
-    fn gtk_widget_add_controller(widget: Ptr, controller: Ptr);
-    fn gtk_widget_add_tick_callback(
-        widget: Ptr,
-        callback: extern "C" fn(Ptr, Ptr, Ptr) -> c_int,
-        data: Ptr,
-        destroy: Ptr,
-    ) -> c_uint;
-    fn gtk_widget_queue_draw(widget: Ptr);
-    fn gtk_event_controller_motion_new() -> Ptr;
-    fn gtk_gesture_click_new() -> Ptr;
-}
-#[link(name = "gobject-2.0")]
-extern "C" {
-    fn g_signal_connect_data(
-        instance: Ptr,
-        signal: *const c_char,
-        callback: Ptr,
-        data: Ptr,
-        destroy: Ptr,
-        flags: c_uint,
-    ) -> u64;
-}
-#[link(name = "glib-2.0")]
-extern "C" {
-    fn g_main_loop_new(context: Ptr, running: c_int) -> Ptr;
-    fn g_main_loop_run(main_loop: Ptr);
-    fn g_main_loop_quit(main_loop: Ptr);
-}
-#[link(name = "cairo")]
-extern "C" {
-    fn cairo_set_source_rgb(cr: Ptr, r: c_double, g: c_double, b: c_double);
-    fn cairo_set_source_rgba(cr: Ptr, r: c_double, g: c_double, b: c_double, a: c_double);
-    fn cairo_paint(cr: Ptr);
-    fn cairo_set_line_width(cr: Ptr, width: c_double);
-    fn cairo_move_to(cr: Ptr, x: c_double, y: c_double);
-    fn cairo_line_to(cr: Ptr, x: c_double, y: c_double);
-    fn cairo_stroke(cr: Ptr);
-    fn cairo_select_font_face(cr: Ptr, family: *const c_char, slant: c_int, weight: c_int);
-    fn cairo_set_font_size(cr: Ptr, size: c_double);
-    fn cairo_show_text(cr: Ptr, text: *const c_char);
-}
+const CHARACTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$&*()-_+=/[]{};:<>.,0123456789";
+const CELL_WIDTH: f64 = 8.0;
+const CELL_HEIGHT: f64 = 12.0;
+const DENSITY: f64 = 0.2;
+const BASE_OPACITY: f64 = 0.1;
+const GLITCH_AMOUNT: f64 = 0.35;
+const SPEED: f64 = 0.3;
+const FLOW: f64 = 0.4;
+const CURSOR_RADIUS: f64 = 100.0;
+const EDGE_FADE: f64 = 0.15;
 
 struct State {
-    started: Instant,
+    start: Instant,
+    last_frame: f64,
     pointer: Option<(f64, f64)>,
-    peak: (f64, f64),
-    strength: f64,
-    ripple: Option<(f64, f64, f64)>,
-}
-thread_local! { static STATE: RefCell<State> = RefCell::new(State { started: Instant::now(), pointer: None, peak: (0.0, 0.0), strength: 0.0, ripple: None }); }
-
-fn field(
-    x: f64,
-    y: f64,
-    t: f64,
-    peak: (f64, f64),
-    strength: f64,
-    ripple: Option<(f64, f64, f64)>,
-) -> f64 {
-    let base = (x * 0.009 + t * 0.16).sin() * 0.55
-        + (y * 0.011 - t * 0.11).cos() * 0.45
-        + ((x + y) * 0.006 + t * 0.08).sin() * 0.55;
-    let d = ((x - peak.0).powi(2) + (y - peak.1).powi(2)).sqrt();
-    let hill = strength * 2.0 * (-(d / 130.0).powi(2)).exp();
-    let wave = ripple.map_or(0.0, |(rx, ry, age)| {
-        let radius = ((x - rx).powi(2) + (y - ry).powi(2)).sqrt();
-        let front = radius - age * 260.0;
-        0.8 * (-(front / 32.0).powi(2)).exp() * (front / 18.0).sin() * (1.0 - age / 2.6).max(0.0)
-    });
-    base + hill + wave
+    trail: VecDeque<(f64, f64, f64)>,
+    tear: Option<(f64, f64, f64)>,
 }
 
-extern "C" fn draw(_: Ptr, cr: Ptr, width: c_int, height: c_int, _: Ptr) {
-    STATE.with(|s| {
-        let s = s.borrow();
-        let t = s.started.elapsed().as_secs_f64();
-        unsafe {
-            cairo_set_source_rgb(cr, 0.035, 0.047, 0.075);
-            cairo_paint(cr);
-            let step = 9.0;
-            let cols = (width as f64 / step).ceil() as usize + 1;
-            let rows = (height as f64 / step).ceil() as usize + 1;
-            let ripple = s
-                .ripple
-                .map(|(x, y, start)| (x, y, t - start))
-                .filter(|v| v.2 < 2.6);
-            let mut values = Vec::with_capacity(cols * rows);
-            for y in 0..rows {
-                for x in 0..cols {
-                    values.push(field(
-                        x as f64 * step,
-                        y as f64 * step,
-                        t,
-                        s.peak,
-                        s.strength,
-                        ripple,
-                    ));
-                }
-            }
-            for level in -8..=8 {
-                let threshold = level as f64 * 0.23;
-                cairo_set_source_rgba(
-                    cr,
-                    0.40,
-                    0.68,
-                    0.88,
-                    if level % 5 == 0 { 0.35 } else { 0.18 },
-                );
-                cairo_set_line_width(cr, if level % 5 == 0 { 1.3 } else { 0.8 });
-                for y in 0..rows - 1 {
-                    for x in 0..cols - 1 {
-                        let px = x as f64 * step;
-                        let py = y as f64 * step;
-                        let corners = [
-                            (px, py, values[y * cols + x]),
-                            (px + step, py, values[y * cols + x + 1]),
-                            (px + step, py + step, values[(y + 1) * cols + x + 1]),
-                            (px, py + step, values[(y + 1) * cols + x]),
-                        ];
-                        let mut points = [(0.0, 0.0); 4];
-                        let mut count = 0;
-                        for i in 0..4 {
-                            let a = corners[i];
-                            let b = corners[(i + 1) % 4];
-                            if (a.2 < threshold) != (b.2 < threshold) {
-                                let f = (threshold - a.2) / (b.2 - a.2);
-                                points[count] = (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f);
-                                count += 1;
-                            }
-                        }
-                        if count >= 2 {
-                            cairo_move_to(cr, points[0].0, points[0].1);
-                            cairo_line_to(cr, points[1].0, points[1].1);
-                        }
-                        if count == 4 {
-                            cairo_move_to(cr, points[2].0, points[2].1);
-                            cairo_line_to(cr, points[3].0, points[3].1);
-                        }
-                    }
-                }
-                cairo_stroke(cr);
-            }
-            /* label omitted */
-            /*
-            cairo_select_font_face(cr, c"Sans".as_ptr(), 0, 1);
-            cairo_set_font_size(cr, 34.0);
-            cairo_move_to(cr, 42.0, 65.0);
-            cairo_show_text(cr, c"Amnessia".as_ptr());
-            cairo_set_source_rgba(cr, 0.77, 0.85, 0.94, 0.8);
-            cairo_select_font_face(cr, c"Sans".as_ptr(), 0, 0);
-            cairo_set_font_size(cr, 14.0);
-            cairo_move_to(cr, 44.0, 91.0);
-            cairo_show_text(
-                cr,
-                c"Move your cursor to shape the landscape. Click to make a wave.".as_ptr(),
-            );
-            */
-        }
-    });
+thread_local! {
+    static STATE: Rc<RefCell<State>> = Rc::new(RefCell::new(State {
+        start: Instant::now(), last_frame: 0.0, pointer: None, trail: VecDeque::new(), tear: None,
+    }));
 }
-extern "C" fn tick(widget: Ptr, _: Ptr, _: Ptr) -> c_int {
-    STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        if let Some((x, y)) = s.pointer {
-            s.peak.0 += (x - s.peak.0) * 0.12;
-            s.peak.1 += (y - s.peak.1) * 0.12;
-            s.strength += (1.0 - s.strength) * 0.08;
-        } else {
-            s.strength *= 0.92;
-        }
-    });
-    unsafe {
-        gtk_widget_queue_draw(widget);
+
+fn hash(x: i32, y: i32, seed: u32) -> u32 {
+    let mut value = (x as u32).wrapping_mul(0x9e3779b1)
+        ^ (y as u32).wrapping_mul(0x85ebca6b)
+        ^ seed.wrapping_mul(0xc2b2ae35);
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x7feb352d);
+    value ^= value >> 15;
+    value = value.wrapping_mul(0x846ca68b);
+    value ^ (value >> 16)
+}
+
+fn fraction(value: u32) -> f64 {
+    value as f64 / u32::MAX as f64
+}
+fn smooth(value: f64) -> f64 {
+    let t = value.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+fn edge_mask(x: f64, y: f64, width: f64, height: f64) -> f64 {
+    let edge = width.min(height) * EDGE_FADE;
+    if edge <= 0.0 {
+        return 1.0;
     }
-    1
+    smooth(x.min(width - x) / edge) * smooth(y.min(height - y) / edge)
 }
-extern "C" fn motion(_: Ptr, x: f64, y: f64, _: Ptr) {
-    STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        if s.pointer.is_none() && s.strength < 0.01 {
-            s.peak = (x, y);
-        }
-        s.pointer = Some((x, y));
-    });
-}
-extern "C" fn leave(_: Ptr, _: Ptr) {
-    STATE.with(|s| s.borrow_mut().pointer = None);
-}
-extern "C" fn click(_: Ptr, _: c_int, x: f64, y: f64, _: Ptr) {
-    STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        s.ripple = Some((x, y, s.started.elapsed().as_secs_f64()));
-    });
-}
-extern "C" fn close(_: Ptr, main_loop: Ptr) -> c_int {
-    unsafe {
-        g_main_loop_quit(main_loop);
-    }
-    0
+
+fn animations_enabled() -> bool {
+    gtk4::Settings::default().is_none_or(|settings| settings.is_gtk_enable_animations())
 }
 
 pub fn create() -> gtk4::Widget {
-    use gtk4::glib::translate::from_glib_none;
-    unsafe {
-        let area = gtk_drawing_area_new();
-        gtk_drawing_area_set_draw_func(area, draw, std::ptr::null_mut(), std::ptr::null_mut());
-        gtk_widget_add_tick_callback(area, tick, std::ptr::null_mut(), std::ptr::null_mut());
-        from_glib_none(area.cast())
-    }
+    let area = gtk4::DrawingArea::new();
+    area.set_can_target(false);
+    area.set_draw_func(|_, cr, width, height| {
+        STATE.with(|state| {
+            let state = state.borrow();
+            let animated = animations_enabled();
+            let time = if animated {
+                state.start.elapsed().as_secs_f64()
+            } else {
+                100.0
+            };
+            cr.set_source_rgb(0.035, 0.047, 0.075);
+            let _ = cr.paint();
+            cr.select_font_face(
+                "monospace",
+                gtk4::cairo::FontSlant::Normal,
+                gtk4::cairo::FontWeight::Normal,
+            );
+            cr.set_font_size(10.0);
+            let cols = (width as f64 / CELL_WIDTH).ceil() as i32;
+            let rows = (height as f64 / CELL_HEIGHT).ceil() as i32;
+            let edge_width = width as f64;
+            let edge_height = height as f64;
+            let epoch_time = time * SPEED;
+            let epoch = epoch_time.floor() as u32;
+            let phase = epoch_time.fract();
+            let transition = (std::f64::consts::PI * phase).sin().max(0.0);
+            let intro = if animated { smooth(time / 1.4) } else { 1.0 };
+            for row in 0..rows {
+                for col in 0..cols {
+                    let x = (col as f64 + 0.5) * CELL_WIDTH;
+                    let y = (row as f64 + 0.5) * CELL_HEIGHT;
+                    let seed = hash(col, row, 0);
+                    let occupied = fraction(seed) < DENSITY;
+                    let change = hash(col, row, epoch.wrapping_add(1));
+                    let glitch = animated && fraction(change) < GLITCH_AMOUNT * 0.05;
+                    let mut heat = if glitch { transition * 0.72 } else { 0.0 };
+                    if animated && (occupied || fraction(change.rotate_left(13)) < 0.15) {
+                        if let Some((px, py)) = state.pointer {
+                            let distance = (x - px).hypot(y - py);
+                            heat = heat.max(smooth(1.0 - distance / CURSOR_RADIUS) * 0.75);
+                        }
+                        for &(px, py, then) in &state.trail {
+                            let age = time - then;
+                            let distance = (x - px).hypot(y - py);
+                            let trail = smooth(1.0 - distance / (CURSOR_RADIUS * 0.55))
+                                * (1.0 - age / 0.8).max(0.0)
+                                * 0.6;
+                            heat = heat.max(trail);
+                        }
+                        if let Some((tx, ty, when)) = state.tear {
+                            let age = time - when;
+                            let distance = (x - tx).abs();
+                            let front = age * 1500.0;
+                            let row_fade = (1.0 - (y - ty).abs() / (CELL_HEIGHT * 3.0)).max(0.0);
+                            let line = (1.0 - (distance - front).abs() / 80.0).max(0.0);
+                            heat = heat.max(line * row_fade * (1.0 - age / 1.3).max(0.0));
+                        }
+                    }
+                    if !occupied && heat < 0.04 {
+                        continue;
+                    }
+                    let wave = 1.0 + FLOW * ((x * 0.012 + y * 0.008 + time * 0.12).sin() * 0.5);
+                    let base = if occupied { BASE_OPACITY * wave } else { 0.0 };
+                    let alpha = (base + heat * 0.8).min(1.0)
+                        * edge_mask(x, y, edge_width, edge_height)
+                        * intro;
+                    if alpha < 0.004 {
+                        continue;
+                    }
+                    let glyph = if heat > 0.18 { change } else { seed };
+                    let ch = CHARACTERS[glyph as usize % CHARACTERS.len()] as char;
+                    if heat > 0.08 && change & 1 == 0 {
+                        cr.set_source_rgba(124.0 / 255.0, 58.0 / 255.0, 237.0 / 255.0, alpha);
+                    } else {
+                        cr.set_source_rgba(1.0, 1.0, 1.0, alpha);
+                    }
+                    cr.move_to(x - 3.0, y + 3.5);
+                    let _ = cr.show_text(&ch.to_string());
+                }
+            }
+        });
+    });
+    area.add_tick_callback(|area, clock| {
+        if !animations_enabled() {
+            return gtk4::glib::ControlFlow::Continue;
+        }
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            let now = clock.frame_time() as f64 / 1_000_000.0;
+            if now - state.last_frame >= 1.0 / 30.0 {
+                state.last_frame = now;
+                let time = state.start.elapsed().as_secs_f64();
+                while state
+                    .trail
+                    .front()
+                    .is_some_and(|point| time - point.2 > 0.8)
+                {
+                    state.trail.pop_front();
+                }
+                if state.tear.is_some_and(|tear| time - tear.2 > 1.3) {
+                    state.tear = None;
+                }
+                area.queue_draw();
+            }
+        });
+        gtk4::glib::ControlFlow::Continue
+    });
+    area.upcast()
 }
 
-// Track the overlay so the background still responds beneath the controls.
-pub fn attach(widget: &impl gtk4::prelude::IsA<gtk4::Widget>) {
-    use gtk4::prelude::*;
-    let pointer = gtk4::EventControllerMotion::new();
-    pointer.set_propagation_phase(gtk4::PropagationPhase::Capture);
-    pointer.connect_motion(|_, x, y| motion(std::ptr::null_mut(), x, y, std::ptr::null_mut()));
-    pointer.connect_leave(|_| leave(std::ptr::null_mut(), std::ptr::null_mut()));
-    widget.add_controller(pointer);
-    let gesture = gtk4::GestureClick::new();
-    gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
-    gesture
-        .connect_pressed(|_, n, x, y| click(std::ptr::null_mut(), n, x, y, std::ptr::null_mut()));
-    widget.add_controller(gesture);
+pub fn attach(widget: &impl IsA<gtk4::Widget>) {
+    let motion = gtk4::EventControllerMotion::new();
+    motion.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    motion.connect_motion(|_, x, y| {
+        if !animations_enabled() {
+            return;
+        }
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            let time = state.start.elapsed().as_secs_f64();
+            if state
+                .pointer
+                .is_none_or(|(px, py)| (px - x).hypot(py - y) > 20.0)
+            {
+                state.trail.push_back((x, y, time));
+                if state.trail.len() > 12 {
+                    state.trail.pop_front();
+                }
+            }
+            state.pointer = Some((x, y));
+        });
+    });
+    motion.connect_leave(|_| STATE.with(|state| state.borrow_mut().pointer = None));
+    widget.add_controller(motion);
+    let click = gtk4::GestureClick::new();
+    click.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    click.connect_pressed(|_, _, x, y| {
+        if !animations_enabled() {
+            return;
+        }
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.tear = Some((x, y, state.start.elapsed().as_secs_f64()));
+        });
+    });
+    widget.add_controller(click);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn hash_density_and_edge_fade_are_bounded() {
+        let occupied = (0..100)
+            .flat_map(|y| (0..100).map(move |x| fraction(hash(x, y, 0)) < DENSITY))
+            .filter(|occupied| *occupied)
+            .count();
+        assert!((1800..2200).contains(&occupied));
+        assert_eq!(edge_mask(0.0, 50.0, 100.0, 100.0), 0.0);
+        assert_eq!(edge_mask(50.0, 50.0, 100.0, 100.0), 1.0);
+    }
 }

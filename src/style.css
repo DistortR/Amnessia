@@ -1,8 +1,8 @@
 window { color: #edf0fa; }
-.sidebar { background: rgba(13, 15, 28, 0.96); padding: 24px 16px; }
+.sidebar { background: rgba(13, 15, 28, 0.20); padding: 24px 16px; border: 0; box-shadow: none; outline: none; }
 .brand { font-size: 25px; font-weight: 800; margin-bottom: 24px; }
 .section-label { color: #a6a4ba; font-size: 11px; font-weight: bold; letter-spacing: 2px; }
-.content { padding: 28px; background: rgba(13, 18, 31, 0.72); }
+.content { padding: 28px; background: rgba(13, 18, 31, 0.18); }
 .title { font-size: 25px; font-weight: 700; }
 .flash-row { background: rgba(39, 42, 60, 0.9); border-radius: 8px; padding: 12px; }
 .resolved { opacity: 0.55; text-decoration: line-through; }
@@ -12,7 +12,7 @@ window { color: #edf0fa; }
 .error { color: #ff9494; }
 
 .light { color: #202132; }
-.light .sidebar { background: rgba(247, 246, 252, 0.97); color: #202132; }
+.light .sidebar { background: rgba(247, 246, 252, 0.30); color: #202132; }
 .light .content { background: rgba(240, 240, 250, 0.86); color: #202132; }
 .light .flash-row { background: rgba(255, 255, 255, 0.94); color: #202132; }
 .light .section-label, .light .status { color: #5e5b70; }
@@ -23,3 +23,6 @@ window { color: #edf0fa; }
 .bulb-button { padding: 4px; min-width: 28px; min-height: 28px; background: transparent; }
 .flash-edit { padding: 4px; background: transparent; box-shadow: none; border: 0; }
 .flash-edit:hover { background: rgba(189, 140, 255, 0.12); }
+
+@keyframes typing-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.typing-cursor { animation: typing-blink 1s infinite; }
