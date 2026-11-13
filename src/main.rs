@@ -13,18 +13,24 @@ use gtk4::{
     ScrolledWindow,
 };
 use rusqlite::Connection;
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashSet,
+    rc::Rc,
+};
 
 #[derive(Clone)]
 struct Ui {
     db: Rc<Connection>,
     selected: Rc<Cell<Option<i64>>>,
+    background: gtk4::Widget,
     episodes: GtkBox,
     flashes: GtkBox,
     title: Label,
     window: ApplicationWindow,
     filter: filters::Filters,
     error: Label,
+    loaded_episodes: Rc<RefCell<HashSet<i64>>>,
 }
 
 fn show_error(ui: &Ui, error: impl std::fmt::Display) {
@@ -48,8 +54,12 @@ fn refresh_flashes(ui: &Ui) {
             .filter(|f| filter == "all" || f.status == filter)
             .collect::<Vec<_>>()
     }) {
-        Ok(items) if items.is_empty() => ui.flashes.append(&typing::empty_message()),
         Ok(items) => {
+            let animate_entrance = ui.loaded_episodes.borrow_mut().insert(id);
+            if items.is_empty() {
+                ui.flashes.append(&typing::empty_message());
+                return;
+            }
             for flash in items {
                 let db::Flash {
                     id,
@@ -60,6 +70,7 @@ fn refresh_flashes(ui: &Ui) {
                 } = flash.clone();
                 let row = GtkBox::new(Orientation::Horizontal, 12);
                 row.add_css_class("flash-row");
+                row.set_hexpand(true);
                 let label = Label::new(Some(&title));
                 label.set_xalign(0.0);
                 label.set_hexpand(true);
@@ -125,10 +136,16 @@ fn refresh_flashes(ui: &Ui) {
                         Err(e) => show_error(&cloned, e),
                     }
                 });
-                shine::attach(&button);
-                row.append(&button);
+                row.append(&shine::wrap(&button));
                 row.append(&edit);
-                ui.flashes.append(&blur::BlurRow::new(&row, true));
+                let surface = Overlay::new();
+                surface.add_css_class("flash-surface");
+                surface.set_overflow(gtk4::Overflow::Hidden);
+                surface.set_child(Some(&sidebar_blur::SidebarBlur::new(&ui.background, 8.0)));
+                surface.add_overlay(&row);
+                surface.set_measure_overlay(&row, true);
+                ui.flashes
+                    .append(&blur::BlurRow::new(&surface, animate_entrance, 1.0));
             }
         }
         Err(e) => show_error(ui, e),
@@ -144,7 +161,6 @@ fn refresh_episodes(ui: &Ui) {
             for (id, name) in items {
                 let button = Button::with_label(&name);
                 button.add_css_class("episode");
-                shine::attach(&button);
                 if ui.selected.get() == Some(id) {
                     button.add_css_class("selected-episode");
                     ui.title.set_text(&name);
@@ -153,9 +169,8 @@ fn refresh_episodes(ui: &Ui) {
                 button.connect_clicked(move |_| {
                     cloned.selected.set(Some(id));
                     refresh_episodes(&cloned);
-                    refresh_flashes(&cloned);
                 });
-                ui.episodes.append(&blur::BlurRow::new(&button, false));
+                ui.episodes.append(&blur::BlurRow::new(&button, false, 4.0));
             }
             refresh_flashes(ui);
         }
@@ -551,7 +566,7 @@ fn build(app: &Application) {
     let side_overlay = Overlay::new();
     side_overlay.set_width_request(240);
     side_overlay.set_vexpand(true);
-    side_overlay.set_child(Some(&sidebar_blur::SidebarBlur::new(&bg)));
+    side_overlay.set_child(Some(&sidebar_blur::SidebarBlur::new(&bg, 0.0)));
     let side = GtkBox::new(Orientation::Vertical, 12);
     side.add_css_class("sidebar");
     side.set_width_request(240);
@@ -576,6 +591,7 @@ fn build(app: &Application) {
     let brand_name = Label::new(Some("mnessia"));
     brand_name.set_xalign(0.0);
     brand_name.set_valign(gtk4::Align::End);
+    brand_name.set_margin_bottom(0);
     brand.append(&brand_name);
     side.append(&brand);
     let heading = Label::new(Some("EPISODES"));
@@ -583,7 +599,7 @@ fn build(app: &Application) {
     heading.add_css_class("section-label");
     side.append(&heading);
     let add_episode = Button::with_label("+ Add Episode");
-    side.append(&add_episode);
+    side.append(&shine::wrap(&add_episode));
     let episodes = GtkBox::new(Orientation::Vertical, 6);
     let scroll = ScrolledWindow::builder()
         .vexpand(true)
@@ -625,7 +641,7 @@ fn build(app: &Application) {
     content.append(&top);
     let controls = GtkBox::new(Orientation::Horizontal, 8);
     let add_flash = Button::with_label("+ Add Flash");
-    controls.append(&add_flash);
+    controls.append(&shine::wrap(&add_flash));
     let filter = filters::Filters::new();
     controls.append(&filter.widget);
     content.append(&controls);
@@ -647,12 +663,14 @@ fn build(app: &Application) {
     let ui = Ui {
         db: database,
         selected: Rc::new(Cell::new(None)),
+        background: bg.clone().upcast(),
         episodes,
         flashes,
         title,
         window: window.clone(),
         filter,
         error,
+        loaded_episodes: Rc::new(RefCell::new(HashSet::new())),
     };
     let u = ui.clone();
     add_episode.connect_clicked(move |_| episode_dialog(&u));

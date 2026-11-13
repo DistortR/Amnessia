@@ -75,7 +75,11 @@ glib::wrapper! {
 }
 
 impl BlurRow {
-    pub fn new(child: &impl IsA<gtk4::Widget>, animated: bool) -> Self {
+    pub fn new(
+        child: &impl IsA<gtk4::Widget>,
+        animate_entrance: bool,
+        max_tilt_degrees: f64,
+    ) -> Self {
         let row: Self = glib::Object::new();
         child.set_parent(&row);
         row.imp().child.replace(Some(child.clone().upcast()));
@@ -90,7 +94,13 @@ impl BlurRow {
             if !gtk4::Settings::default().is_none_or(|s| s.is_gtk_enable_animations()) {
                 return;
             }
-            let (tx, ty) = tilt_for_pointer(x, y, row.width() as f64, row.height() as f64);
+            let (tx, ty) = tilt_for_pointer(
+                x,
+                y,
+                row.width() as f64,
+                row.height() as f64,
+                max_tilt_degrees,
+            );
             row.imp().target_x.set(tx);
             row.imp().target_y.set(ty);
             animate_tilt(&row);
@@ -104,7 +114,7 @@ impl BlurRow {
             }
         });
         row.add_controller(motion);
-        if !animated {
+        if !animate_entrance {
             return row;
         }
         row.imp().radius.set(10.0);
@@ -129,13 +139,13 @@ impl BlurRow {
     }
 }
 
-fn tilt_for_pointer(x: f64, y: f64, width: f64, height: f64) -> (f64, f64) {
+fn tilt_for_pointer(x: f64, y: f64, width: f64, height: f64, max_tilt_degrees: f64) -> (f64, f64) {
     if width <= 0.0 || height <= 0.0 {
         return (0.0, 0.0);
     }
     (
-        (0.5 - y / height).clamp(-0.5, 0.5) * 20.0,
-        (x / width - 0.5).clamp(-0.5, 0.5) * 20.0,
+        (0.5 - y / height).clamp(-0.5, 0.5) * max_tilt_degrees * 2.0,
+        (x / width - 0.5).clamp(-0.5, 0.5) * max_tilt_degrees * 2.0,
     )
 }
 
@@ -173,9 +183,9 @@ mod tests {
     use super::*;
     #[test]
     fn tilt_points_toward_pointer() {
-        assert_eq!(tilt_for_pointer(50.0, 50.0, 100.0, 100.0), (0.0, 0.0));
-        assert_eq!(tilt_for_pointer(100.0, 0.0, 100.0, 100.0), (10.0, 10.0));
-        assert_eq!(tilt_for_pointer(0.0, 0.0, 0.0, 0.0), (0.0, 0.0));
+        assert_eq!(tilt_for_pointer(50.0, 50.0, 100.0, 100.0, 2.0), (0.0, 0.0));
+        assert_eq!(tilt_for_pointer(100.0, 0.0, 100.0, 100.0, 2.0), (2.0, 2.0));
+        assert_eq!(tilt_for_pointer(0.0, 0.0, 0.0, 0.0, 2.0), (0.0, 0.0));
     }
     #[test]
     fn focus_animation_starts_blurred_and_ends_sharp() {

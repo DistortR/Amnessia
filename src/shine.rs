@@ -5,18 +5,8 @@ fn sweep_position(progress: f64, width: f64) -> f64 {
     (-0.4 + 1.8 * progress.clamp(0.0, 1.0)) * width
 }
 
-pub fn attach(button: &impl IsA<Button>) {
-    let button = button.as_ref();
-    if button.has_css_class("shine-attached") || button.has_css_class("flash-edit") {
-        return;
-    }
-    let Some(child) = button.child() else {
-        return;
-    };
+fn add_shine(button: &Button, overlay: &Overlay) {
     button.add_css_class("shine-attached");
-    button.set_child(gtk4::Widget::NONE);
-    let overlay = Overlay::new();
-    overlay.set_child(Some(&child));
     let area = DrawingArea::new();
     area.set_hexpand(true);
     area.set_vexpand(true);
@@ -29,22 +19,49 @@ pub fn attach(button: &impl IsA<Button>) {
             return;
         }
         let w = width as f64;
+        let h = height as f64;
         let center = sweep_position(t, w);
         let stripe = (w * 0.35).max(20.0);
-        let gradient = gtk4::cairo::LinearGradient::new(
-            center - stripe,
-            0.0,
-            center + stripe,
-            height as f64 * 0.25,
-        );
+        let gradient = gtk4::cairo::LinearGradient::new(center - stripe, h, center + stripe, 0.0);
         gradient.add_color_stop_rgba(0.0, 1.0, 1.0, 1.0, 0.0);
         gradient.add_color_stop_rgba(0.5, 1.0, 1.0, 1.0, 0.32);
         gradient.add_color_stop_rgba(1.0, 1.0, 1.0, 1.0, 0.0);
+        let radius = 5.0_f64.min(w / 2.0).min(h / 2.0);
+        cr.new_sub_path();
+        cr.arc(
+            w - radius,
+            radius,
+            radius,
+            -std::f64::consts::FRAC_PI_2,
+            0.0,
+        );
+        cr.arc(
+            w - radius,
+            h - radius,
+            radius,
+            0.0,
+            std::f64::consts::FRAC_PI_2,
+        );
+        cr.arc(
+            radius,
+            h - radius,
+            radius,
+            std::f64::consts::FRAC_PI_2,
+            std::f64::consts::PI,
+        );
+        cr.arc(
+            radius,
+            radius,
+            radius,
+            std::f64::consts::PI,
+            3.0 * std::f64::consts::FRAC_PI_2,
+        );
+        cr.close_path();
+        cr.clip();
         let _ = cr.set_source(&gradient);
         let _ = cr.paint();
     });
     overlay.add_overlay(&area);
-    button.set_child(Some(&overlay));
     let motion = gtk4::EventControllerMotion::new();
     motion.set_propagation_phase(gtk4::PropagationPhase::Capture);
     let generation = Rc::new(Cell::new(0_u64));
@@ -78,6 +95,32 @@ pub fn attach(button: &impl IsA<Button>) {
         });
     });
     button.add_controller(motion);
+}
+
+pub fn wrap(button: &Button) -> Overlay {
+    let overlay = Overlay::new();
+    overlay.set_child(Some(button));
+    add_shine(button, &overlay);
+    overlay
+}
+
+pub fn attach(button: &impl IsA<Button>) {
+    let button = button.as_ref();
+    if button.has_css_class("shine-attached")
+        || button.has_css_class("flash-edit")
+        || button.has_css_class("episode")
+        || button.has_css_class("filter-button")
+    {
+        return;
+    }
+    let Some(child) = button.child() else {
+        return;
+    };
+    button.set_child(gtk4::Widget::NONE);
+    let overlay = Overlay::new();
+    overlay.set_child(Some(&child));
+    add_shine(button, &overlay);
+    button.set_child(Some(&overlay));
 }
 
 pub fn attach_tree(widget: &impl IsA<gtk4::Widget>) {

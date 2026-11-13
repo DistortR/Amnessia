@@ -48,7 +48,7 @@ impl Filters {
             );
             cr.close_path();
             let _ = cr.fill();
-            cr.set_source_rgba(0.78, 0.80, 0.84, 0.48);
+            cr.set_source_rgba(0.27, 0.13, 0.42, 0.94);
             let x = current.get() * segment + 3.0;
             let y = 3.0;
             let w = (segment - 6.0).max(0.0);
