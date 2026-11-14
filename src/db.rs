@@ -46,9 +46,13 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         db.execute_batch(include_str!("../db/migrate-4-to-5.sql"))
             .map_err(|e| e.to_string())?;
     }
-    if !(1..=5).contains(&version) {
+    if (1..=5).contains(&version) {
+        db.execute_batch(include_str!("../db/migrate-5-to-6.sql"))
+            .map_err(|e| e.to_string())?;
+    }
+    if !(1..=6).contains(&version) {
         return Err(format!(
-            "Unsupported database version {version}; expected 1, 2, 3, 4 or 5"
+            "Unsupported database version {version}; expected 1, 2, 3, 4, 5 or 6"
         ));
     }
     Ok(db)
@@ -85,6 +89,7 @@ pub struct Flash {
     pub status: String,
     pub intensity: u8,
     pub due_at: Option<String>,
+    pub notes: String,
     pub early_reminders: Vec<i64>,
     pub repeat_rule: RepeatRule,
 }
@@ -171,6 +176,7 @@ fn flash_from_row(row: &Row<'_>, early_reminders: Vec<i64>) -> rusqlite::Result<
         status: row.get(2)?,
         intensity: row.get(3)?,
         due_at: row.get(4)?,
+        notes: row.get(9)?,
         early_reminders,
         repeat_rule,
     })
@@ -186,7 +192,7 @@ fn load_early_reminders(db: &Connection, flash_id: i64) -> Result<Vec<i64>> {
 
 pub fn flashes(db: &Connection, episode: i64) -> Result<Vec<Flash>> {
     let mut items = db
-        .prepare("SELECT id, title, status, intensity, due_at, repeat_mode, repeat_every, repeat_unit, repeat_weekdays FROM flashes WHERE episode_id = ? ORDER BY position, created_at, id")?
+        .prepare("SELECT id, title, status, intensity, due_at, repeat_mode, repeat_every, repeat_unit, repeat_weekdays, notes FROM flashes WHERE episode_id = ? ORDER BY position, created_at, id")?
         .query_map([episode], |r| flash_from_row(r, Vec::new()))?
         .collect::<Result<Vec<_>>>()?;
     for flash in &mut items {
@@ -283,6 +289,28 @@ pub fn update_flash(
     Ok(())
 }
 
+pub fn update_flash_notes(db: &Connection, id: i64, notes: &str) -> Result<()> {
+    if db.execute(
+        "UPDATE flashes SET notes = ?2 WHERE id = ?1",
+        params![id, notes],
+    )? == 0
+    {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    Ok(())
+}
+
+pub fn delete_flash(db: &Connection, id: i64) -> std::result::Result<(), String> {
+    if db
+        .execute("DELETE FROM flashes WHERE id = ?1", [id])
+        .map_err(|error| error.to_string())?
+        == 0
+    {
+        return Err("This Flash no longer exists.".into());
+    }
+    Ok(())
+}
+
 fn validate_schedule(
     due_at: Option<&str>,
     early_reminders: &[i64],
@@ -337,15 +365,15 @@ fn save_early_reminders(
 }
 
 pub fn due_reminders(db: &Connection, now: &str) -> Result<Vec<PendingReminder>> {
-    const DUE: &str = "SELECT f.id, f.title, f.status, f.intensity, f.due_at, f.repeat_mode, f.repeat_every, f.repeat_unit, f.repeat_weekdays, f.due_at AS occurrence_at, 0 AS offset_minutes FROM flashes f WHERE f.due_at IS NOT NULL AND datetime(f.due_at) <= datetime(?1) AND f.status != 'resolved' AND NOT EXISTS (SELECT 1 FROM flash_notification_log l WHERE l.flash_id = f.id AND l.occurrence_at = f.due_at AND l.offset_minutes = 0)";
-    const EARLY: &str = "SELECT f.id, f.title, f.status, f.intensity, f.due_at, f.repeat_mode, f.repeat_every, f.repeat_unit, f.repeat_weekdays, f.due_at AS occurrence_at, r.offset_minutes FROM flashes f JOIN flash_early_reminders r ON r.flash_id = f.id WHERE f.due_at IS NOT NULL AND datetime(f.due_at) > datetime(?1) AND datetime(f.due_at, printf('-%d minutes', r.offset_minutes)) <= datetime(?1) AND f.status != 'resolved' AND NOT EXISTS (SELECT 1 FROM flash_notification_log l WHERE l.flash_id = f.id AND l.occurrence_at = f.due_at AND l.offset_minutes = r.offset_minutes)";
+    const DUE: &str = "SELECT f.id, f.title, f.status, f.intensity, f.due_at, f.repeat_mode, f.repeat_every, f.repeat_unit, f.repeat_weekdays, '' AS notes, f.due_at AS occurrence_at, 0 AS offset_minutes FROM flashes f WHERE f.due_at IS NOT NULL AND datetime(f.due_at) <= datetime(?1) AND f.status != 'resolved' AND NOT EXISTS (SELECT 1 FROM flash_notification_log l WHERE l.flash_id = f.id AND l.occurrence_at = f.due_at AND l.offset_minutes = 0)";
+    const EARLY: &str = "SELECT f.id, f.title, f.status, f.intensity, f.due_at, f.repeat_mode, f.repeat_every, f.repeat_unit, f.repeat_weekdays, '' AS notes, f.due_at AS occurrence_at, r.offset_minutes FROM flashes f JOIN flash_early_reminders r ON r.flash_id = f.id WHERE f.due_at IS NOT NULL AND datetime(f.due_at) > datetime(?1) AND datetime(f.due_at, printf('-%d minutes', r.offset_minutes)) <= datetime(?1) AND f.status != 'resolved' AND NOT EXISTS (SELECT 1 FROM flash_notification_log l WHERE l.flash_id = f.id AND l.occurrence_at = f.due_at AND l.offset_minutes = r.offset_minutes)";
     let query = format!("{DUE} UNION ALL {EARLY} ORDER BY occurrence_at, offset_minutes DESC");
     db.prepare(&query)?
         .query_map([now], |r| {
             Ok(PendingReminder {
                 flash: flash_from_row(r, Vec::new())?,
-                occurrence_at: r.get(9)?,
-                offset_minutes: r.get(10)?,
+                occurrence_at: r.get(10)?,
+                offset_minutes: r.get(11)?,
             })
         })?
         .collect()
@@ -693,7 +721,7 @@ mod tests {
             let version: i64 = db
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 5);
+            assert_eq!(version, 6);
             assert!(due_reminders(&db, "2030-01-01T00:00:00Z")
                 .unwrap()
                 .is_empty());

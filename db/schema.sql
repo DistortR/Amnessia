@@ -26,7 +26,8 @@ CREATE TABLE flashes (
     repeat_mode TEXT NOT NULL DEFAULT 'none' CHECK (repeat_mode IN ('none', 'interval', 'weekdays')),
     repeat_every INTEGER CHECK (repeat_every BETWEEN 1 AND 365),
     repeat_unit TEXT CHECK (repeat_unit IN ('minutes', 'hours', 'days', 'weeks')),
-    repeat_weekdays INTEGER NOT NULL DEFAULT 0 CHECK (repeat_weekdays BETWEEN 0 AND 127)
+    repeat_weekdays INTEGER NOT NULL DEFAULT 0 CHECK (repeat_weekdays BETWEEN 0 AND 127),
+    notes TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX flashes_episode_order ON flashes(episode_id, position, id);
@@ -41,5 +42,5 @@ CREATE TABLE flash_notification_log (
     offset_minutes INTEGER NOT NULL CHECK (offset_minutes BETWEEN 0 AND 525600),
     PRIMARY KEY (flash_id, occurrence_at, offset_minutes)
 );
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 COMMIT;

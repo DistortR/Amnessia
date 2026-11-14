@@ -30,7 +30,11 @@ impl HighlightSelector {
             let inset = if popup { 7.0 } else { 3.0 };
             let w = width as f64;
             let h = height as f64;
-            let radius = 14.0_f64.min(h / 2.0).min(w / 2.0);
+            let radius = if popup {
+                9.0_f64.min(h / 2.0).min(w / 2.0)
+            } else {
+                14.0_f64.min(h / 2.0).min(w / 2.0)
+            };
             rounded_rect(cr, 0.0, 0.0, w, h, radius);
             if popup {
                 cr.set_source_rgba(17.0 / 255.0, 17.0 / 255.0, 27.0 / 255.0, 0.48);
@@ -43,7 +47,7 @@ impl HighlightSelector {
             let y = inset;
             let width = (segment - inset * 2.0).max(0.0);
             let height = (h - inset * 2.0).max(0.0);
-            let radius = (height / 2.0).min(12.0);
+            let radius = (height / 2.0).min(if popup { 8.0 } else { 12.0 });
             rounded_rect(cr, x, y, width, height, radius);
             if popup {
                 cr.set_source_rgb(93.0 / 255.0, 58.0 / 255.0, 156.0 / 255.0);
@@ -85,6 +89,12 @@ impl HighlightSelector {
             row.set_halign(gtk4::Align::Center);
             button.set_child(Some(&row));
         }
+    }
+
+    pub fn set_content_size(&self, width: i32, height: i32) {
+        self.widget.set_size_request(width, height);
+        self.backdrop.set_content_width(width);
+        self.backdrop.set_content_height(height);
     }
 
     pub fn selected(&self) -> usize {

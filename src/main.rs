@@ -12,6 +12,7 @@ mod typing;
 use gtk4::{
     prelude::*, Application, ApplicationWindow, Box as GtkBox, Button, Calendar, ComboBoxText,
     Dialog, DrawingArea, Entry, Label, Orientation, Overlay, ResponseType, ScrolledWindow,
+    TextBuffer, TextView,
 };
 use rusqlite::Connection;
 use std::{
@@ -53,6 +54,26 @@ fn clear(container: &GtkBox) {
         container.remove(&child);
     }
 }
+fn save_flash_notes(ui: &Ui, id: i64, buffer: &TextBuffer) {
+    let (start, end) = buffer.bounds();
+    let notes = buffer.text(&start, &end, true);
+    match db::update_flash_notes(&ui.db, id, notes.as_str()) {
+        Ok(()) => ui.error.set_text(""),
+        Err(error) => show_error(ui, error),
+    }
+}
+fn flush_flash_notes(
+    ui: &Ui,
+    id: i64,
+    buffer: &TextBuffer,
+    pending: &Rc<RefCell<Option<gtk4::glib::SourceId>>>,
+) {
+    let Some(source) = pending.borrow_mut().take() else {
+        return;
+    };
+    source.remove();
+    save_flash_notes(ui, id, buffer);
+}
 fn refresh_flashes(ui: &Ui) {
     clear(&ui.flashes);
     let Some(id) = ui.selected.get() else {
@@ -81,8 +102,11 @@ fn refresh_flashes(ui: &Ui) {
                     due_at,
                     ..
                 } = flash.clone();
+                let card = GtkBox::new(Orientation::Vertical, 0);
+                card.add_css_class("flash-row");
+                card.set_hexpand(true);
                 let row = GtkBox::new(Orientation::Horizontal, 12);
-                row.add_css_class("flash-row");
+                row.add_css_class("flash-header");
                 row.set_hexpand(true);
                 let label = Label::new(Some(&title));
                 label.set_xalign(0.0);
@@ -183,12 +207,127 @@ fn refresh_flashes(ui: &Ui) {
                 bulb.set_margin_bottom(2);
                 row.append(&bulb);
                 row.append(&edit);
+
+                let notes_open = Rc::new(Cell::new(false));
+                let arrow = gtk4::Image::from_icon_name("pan-down-symbolic");
+                arrow.set_pixel_size(18);
+                let notes_toggle = Button::new();
+                notes_toggle.add_css_class("flash-notes-toggle");
+                notes_toggle.set_child(Some(&arrow));
+                notes_toggle.set_tooltip_text(Some("Show notes"));
+                notes_toggle.update_property(&[gtk4::accessible::Property::Label("Show notes")]);
+                let arrow_revealer = gtk4::Revealer::new();
+                arrow_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideLeft);
+                arrow_revealer.set_transition_duration(240);
+                arrow_revealer.set_child(Some(&notes_toggle));
+                row.append(&arrow_revealer);
+
+                let notes_icon = gtk4::Image::from_icon_name("document-edit-symbolic");
+                notes_icon.set_pixel_size(18);
+                notes_icon.set_valign(gtk4::Align::Center);
+                notes_icon.add_css_class("flash-note-icon");
+                let notes_editor = TextView::new();
+                notes_editor.add_css_class("flash-note-text");
+                notes_editor.set_wrap_mode(gtk4::WrapMode::WordChar);
+                notes_editor.set_hexpand(true);
+                notes_editor.set_vexpand(false);
+                notes_editor.set_accepts_tab(false);
+                notes_editor.set_top_margin(8);
+                notes_editor.set_bottom_margin(8);
+                notes_editor.set_left_margin(8);
+                notes_editor.set_right_margin(8);
+                let notes_buffer = notes_editor.buffer();
+                notes_buffer.set_text(&flash.notes);
+                notes_editor.set_size_request(-1, 16 + notes_buffer.line_count().max(1) * 20);
+                let notes_bar = GtkBox::new(Orientation::Horizontal, 10);
+                notes_bar.add_css_class("flash-notes");
+                notes_bar.append(&notes_icon);
+                notes_bar.append(&notes_editor);
+                let notes_revealer = gtk4::Revealer::new();
+                notes_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideDown);
+                notes_revealer.set_transition_duration(240);
+                notes_revealer.set_child(Some(&notes_bar));
+                card.append(&row);
+                card.append(&notes_revealer);
+
+                let pending_save: Rc<RefCell<Option<gtk4::glib::SourceId>>> =
+                    Rc::new(RefCell::new(None));
+                let save_pending = pending_save.clone();
+                let save_ui = ui.clone();
+                let save_editor = notes_editor.clone();
+                notes_buffer.connect_changed(move |buffer| {
+                    save_editor.set_size_request(-1, 16 + buffer.line_count().max(1) * 20);
+                    if let Some(source) = save_pending.borrow_mut().take() {
+                        source.remove();
+                    }
+                    let timer_pending = save_pending.clone();
+                    let timer_ui = save_ui.clone();
+                    let timer_buffer = buffer.clone();
+                    let timer = gtk4::glib::timeout_add_local_once(
+                        std::time::Duration::from_secs(2),
+                        move || {
+                            timer_pending.borrow_mut().take();
+                            save_flash_notes(&timer_ui, id, &timer_buffer);
+                        },
+                    );
+                    *save_pending.borrow_mut() = Some(timer);
+                });
+
+                let note_ui = ui.clone();
+                let note_buffer = notes_buffer.clone();
+                let note_pending = pending_save.clone();
+                let focus = gtk4::EventControllerFocus::new();
+                focus.connect_leave(move |_| {
+                    flush_flash_notes(&note_ui, id, &note_buffer, &note_pending);
+                });
+                notes_editor.add_controller(focus);
+
+                let click_ui = ui.clone();
+                let click_buffer = notes_buffer.clone();
+                let click_pending = pending_save.clone();
+                let click_revealer = notes_revealer.clone();
+                let click_arrow_slot = arrow_revealer.clone();
+                let click_arrow = arrow.clone();
+                let click_open = notes_open.clone();
+                notes_toggle.connect_clicked(move |button| {
+                    let open = !click_open.get();
+                    click_open.set(open);
+                    click_revealer.set_reveal_child(open);
+                    click_arrow_slot.set_reveal_child(open);
+                    click_arrow.set_icon_name(Some(if open {
+                        "pan-up-symbolic"
+                    } else {
+                        "pan-down-symbolic"
+                    }));
+                    button.set_tooltip_text(Some(if open { "Hide notes" } else { "Show notes" }));
+                    button.update_property(&[gtk4::accessible::Property::Label(if open {
+                        "Hide notes"
+                    } else {
+                        "Show notes"
+                    })]);
+                    if !open {
+                        flush_flash_notes(&click_ui, id, &click_buffer, &click_pending);
+                    }
+                });
+
+                let hover = gtk4::EventControllerMotion::new();
+                let show_arrow = arrow_revealer.clone();
+                hover.connect_enter(move |_, _, _| show_arrow.set_reveal_child(true));
+                let hide_arrow = arrow_revealer.clone();
+                let still_open = notes_open.clone();
+                hover.connect_leave(move |_| {
+                    if !still_open.get() {
+                        hide_arrow.set_reveal_child(false);
+                    }
+                });
+                card.add_controller(hover);
+
                 let surface = Overlay::new();
                 surface.add_css_class("flash-surface");
                 surface.set_overflow(gtk4::Overflow::Hidden);
                 surface.set_child(Some(&sidebar_blur::SidebarBlur::new(&ui.background, 8.0)));
-                surface.add_overlay(&row);
-                surface.set_measure_overlay(&row, true);
+                surface.add_overlay(&card);
+                surface.set_measure_overlay(&card, true);
                 ui.flashes
                     .append(&blur::BlurRow::new(&surface, animate_entrance, 1.0));
             }
@@ -339,6 +478,28 @@ fn dismiss_popup(dialog: &Dialog) {
     dialog.close();
 }
 
+fn popup_scale(window: &gtk4::Window, width: i32, height: i32) -> f64 {
+    let window_width = if window.width() > 0 {
+        window.width()
+    } else {
+        window.default_width().max(1)
+    } as f64;
+    let window_height = if window.height() > 0 {
+        window.height()
+    } else {
+        window.default_height().max(1)
+    } as f64;
+    (0.82 * window_width / width as f64)
+        .min(0.82 * window_height / height as f64)
+        .min(1.0)
+}
+
+fn apply_popup_scale(provider: &gtk4::CssProvider, scale: f64) {
+    provider.load_from_data(&format!(
+        ".responsive-popup {{ transform: scale({scale:.4}); transform-origin: center center; }}"
+    ));
+}
+
 fn present_popup(dialog: &Dialog) {
     let Some(parent) = dialog.transient_for() else {
         return;
@@ -357,12 +518,20 @@ fn present_popup(dialog: &Dialog) {
     let Some(frame) = dialog.child() else {
         return;
     };
+    let (_, width, _, _) = frame.measure(Orientation::Horizontal, -1);
+    let (_, height, _, _) = frame.measure(Orientation::Vertical, width);
     dialog.set_child(gtk4::Widget::NONE);
     frame.add_css_class("reference-dialog");
     let card = Overlay::new();
     card.set_halign(gtk4::Align::Center);
     card.set_valign(gtk4::Align::Center);
     card.set_size_request(dialog.default_size().0, -1);
+    card.add_css_class("responsive-popup");
+    let scale_provider = gtk4::CssProvider::new();
+    card.style_context()
+        .add_provider(&scale_provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    let initial_scale = popup_scale(&parent, width.max(1), height.max(1));
+    apply_popup_scale(&scale_provider, initial_scale);
     card.set_child(Some(&glass));
     card.add_overlay(&frame);
     card.set_measure_overlay(&frame, true);
@@ -380,24 +549,52 @@ fn present_popup(dialog: &Dialog) {
         }
     });
     shield.add_controller(click);
+    let weak_dialog_for_scale = dialog.downgrade();
+    let scale_provider_for_tick = scale_provider.clone();
+    let last_scale = Cell::new(initial_scale);
+    parent.add_tick_callback(move |window, _| {
+        let Some(dialog) = weak_dialog_for_scale.upgrade() else {
+            return gtk4::glib::ControlFlow::Break;
+        };
+        if !dialog.is_modal() {
+            return gtk4::glib::ControlFlow::Break;
+        }
+        let scale = popup_scale(window, width.max(1), height.max(1));
+        if (scale - last_scale.get()).abs() > 0.005 {
+            apply_popup_scale(&scale_provider_for_tick, scale);
+            last_scale.set(scale);
+        }
+        gtk4::glib::ControlFlow::Continue
+    });
     let keys = gtk4::EventControllerKey::new();
     keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
     let controller_dialog = dialog.clone();
     let weak_parent = parent.downgrade();
     let weak_card = card.downgrade();
+    let weak_overlay_for_keys = overlay.downgrade();
     let handler = keys.connect_key_pressed(move |_, key, _, _| {
+        let (Some(parent), Some(card), Some(overlay)) = (
+            weak_parent.upgrade(),
+            weak_card.upgrade(),
+            weak_overlay_for_keys.upgrade(),
+        ) else {
+            return gtk4::glib::Propagation::Proceed;
+        };
+        if overlay
+            .last_child()
+            .is_some_and(|top| top != card.clone().upcast::<gtk4::Widget>())
+        {
+            return gtk4::glib::Propagation::Proceed;
+        }
         if key == gtk4::gdk::Key::Escape {
             controller_dialog.response(ResponseType::Cancel);
             return gtk4::glib::Propagation::Stop;
         }
-        if let (Some(parent), Some(card)) = (weak_parent.upgrade(), weak_card.upgrade()) {
-            if gtk4::prelude::GtkWindowExt::focus(&parent)
-                .is_some_and(|focus| focus.is_ancestor(&card))
-            {
-                return gtk4::glib::Propagation::Proceed;
-            }
-            card.child_focus(gtk4::DirectionType::TabForward);
+        if gtk4::prelude::GtkWindowExt::focus(&parent).is_some_and(|focus| focus.is_ancestor(&card))
+        {
+            return gtk4::glib::Propagation::Proceed;
         }
+        card.child_focus(gtk4::DirectionType::TabForward);
         gtk4::glib::Propagation::Stop
     });
     parent.add_controller(keys.clone());
@@ -493,18 +690,21 @@ fn dialog_actions(dialog: &Dialog, shine_create: bool, left_action: Option<&Butt
                         parent.set_visible(false);
                     }
                     let text = button.label().unwrap_or_default();
+                    let deleting = response == ResponseType::Accept && text == "Delete";
                     button_icon(
                         &button,
                         &text,
                         if response == ResponseType::Cancel {
                             "window-close-symbolic"
+                        } else if deleting {
+                            "user-trash-symbolic"
                         } else if shine_create {
                             "list-add-symbolic"
                         } else {
                             "document-save-symbolic"
                         },
                     );
-                    button.add_css_class(class);
+                    button.add_css_class(if deleting { "dialog-danger" } else { class });
                     button.set_size_request(96, 38);
                     if response == ResponseType::Accept && shine_create {
                         footer.append(&shine::wrap(&button));
@@ -521,37 +721,105 @@ fn dialog_actions(dialog: &Dialog, shine_create: bool, left_action: Option<&Butt
     dialog.content_area().append(&footer);
 }
 
+fn delete_confirmation(ui: &Ui, heading: &str, message: &str) -> (Dialog, Label) {
+    let dialog = Dialog::with_buttons(
+        Some(heading),
+        Some(&ui.window),
+        gtk4::DialogFlags::MODAL,
+        &[
+            ("Cancel", ResponseType::Cancel),
+            ("Delete", ResponseType::Accept),
+        ],
+    );
+    let content = popup_content(&dialog, 400, heading);
+    let message = Label::new(Some(message));
+    message.set_xalign(0.0);
+    message.set_wrap(true);
+    message.add_css_class("confirmation-copy");
+    content.append(&message);
+    let error = Label::new(None);
+    error.set_xalign(0.0);
+    error.set_wrap(true);
+    error.add_css_class("error");
+    content.append(&error);
+    dialog.set_default_response(ResponseType::Cancel);
+    dialog_actions(&dialog, false, None);
+    (dialog, error)
+}
+
+fn popup_delete_button(label: &str) -> Button {
+    let button = Button::new();
+    let icon = gtk4::Image::from_icon_name("user-trash-symbolic");
+    icon.set_pixel_size(18);
+    button.set_child(Some(&icon));
+    button.add_css_class("popup-delete");
+    button.set_size_request(38, 38);
+    button.set_tooltip_text(Some(label));
+    button.update_property(&[gtk4::accessible::Property::Label(label)]);
+    button
+}
+
 fn confirm_delete_episode(ui: &Ui, episode: db::Episode, edit_dialog: &Dialog) {
-    let confirmation = gtk4::AlertDialog::builder()
-        .message(format!("Delete {}?", episode.name))
-        .detail("This permanently deletes the Episode and all its Flashes. This cannot be undone.")
-        .buttons(["Cancel", "Delete"])
-        .cancel_button(0)
-        .default_button(0)
-        .build();
-    let parent = ui.window.clone();
+    let (confirmation, error) = delete_confirmation(
+        ui,
+        "Delete Episode",
+        &format!(
+            "Delete “{}” and all its Flashes? This cannot be undone.",
+            episode.name
+        ),
+    );
     let ui = ui.clone();
     let edit_dialog = edit_dialog.clone();
-    confirmation.choose(
-        Some(&parent),
-        None::<&gtk4::gio::Cancellable>,
-        move |result| {
-            if !matches!(result, Ok(1)) {
-                return;
-            }
-            match db::delete_episode(&ui.db, episode.id) {
-                Ok(default_id) => {
-                    ui.loaded_episodes.borrow_mut().remove(&episode.id);
-                    if ui.selected.get() == Some(episode.id) {
-                        ui.selected.set(Some(default_id));
-                    }
-                    refresh_episodes(&ui);
-                    dismiss_popup(&edit_dialog);
+    let error_label = error.clone();
+    confirmation.connect_response(move |dialog, response| {
+        if response != ResponseType::Accept {
+            dismiss_popup(dialog);
+            return;
+        }
+        match db::delete_episode(&ui.db, episode.id) {
+            Ok(default_id) => {
+                ui.loaded_episodes.borrow_mut().remove(&episode.id);
+                if ui.selected.get() == Some(episode.id) {
+                    ui.selected.set(Some(default_id));
                 }
-                Err(error) => show_error(&ui, error),
+                refresh_episodes(&ui);
+                dismiss_popup(dialog);
+                dismiss_popup(&edit_dialog);
             }
-        },
+            Err(message) => error_label.set_text(&message),
+        }
+    });
+    present_popup(&confirmation);
+}
+
+fn confirm_delete_flash(ui: &Ui, flash: db::Flash, edit_dialog: &Dialog) {
+    let (confirmation, error) = delete_confirmation(
+        ui,
+        "Delete Flash",
+        &format!(
+            "Delete “{}” and its reminder history? This cannot be undone.",
+            flash.title
+        ),
     );
+    let ui = ui.clone();
+    let edit_dialog = edit_dialog.clone();
+    let error_label = error.clone();
+    confirmation.connect_response(move |dialog, response| {
+        if response != ResponseType::Accept {
+            dismiss_popup(dialog);
+            return;
+        }
+        match db::delete_flash(&ui.db, flash.id) {
+            Ok(()) => {
+                ui.error.set_text("");
+                refresh_flashes(&ui);
+                dismiss_popup(dialog);
+                dismiss_popup(&edit_dialog);
+            }
+            Err(message) => error_label.set_text(&message),
+        }
+    });
+    present_popup(&confirmation);
 }
 
 fn rgba_hex(color: &gtk4::gdk::RGBA) -> String {
@@ -569,6 +837,41 @@ fn calendar_label(calendar: &Calendar) -> String {
         .format("%m/%d/%Y")
         .map(|date| date.to_string())
         .unwrap_or_else(|_| "Choose date".into())
+}
+
+fn parse_flash_time(text: &str, format: usize) -> Option<(i32, i32)> {
+    let (hour, minute) = text.split_once(':')?;
+    if hour.len() != 2
+        || minute.len() != 2
+        || !hour.bytes().all(|byte| byte.is_ascii_digit())
+        || !minute.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let mut hour = hour.parse::<i32>().ok()?;
+    let minute = minute.parse::<i32>().ok()?;
+    if minute >= 60 {
+        return None;
+    }
+    match format {
+        0 if (1..=12).contains(&hour) => hour %= 12,
+        1 if (1..=12).contains(&hour) => hour = hour % 12 + 12,
+        2 if hour < 24 => {}
+        _ => return None,
+    }
+    Some((hour, minute))
+}
+
+fn format_flash_time(hour: i32, minute: i32, format: usize) -> String {
+    let hour = if format == 2 {
+        hour
+    } else {
+        match hour % 12 {
+            0 => 12,
+            hour => hour,
+        }
+    };
+    format!("{hour:02}:{minute:02}")
 }
 
 fn format_custom_reminder(minutes: i64) -> String {
@@ -796,14 +1099,7 @@ fn episode_dialog(ui: &Ui, existing: Option<db::Episode>) {
         .as_ref()
         .filter(|episode| !episode.is_default)
         .map(|episode| {
-            let button = Button::new();
-            let icon = gtk4::Image::from_icon_name("user-trash-symbolic");
-            icon.set_pixel_size(18);
-            button.set_child(Some(&icon));
-            button.add_css_class("episode-delete");
-            button.set_size_request(38, 38);
-            button.set_tooltip_text(Some("Delete Episode"));
-            button.update_property(&[gtk4::accessible::Property::Label("Delete Episode")]);
+            let button = popup_delete_button("Delete Episode");
             let delete_ui = ui.clone();
             let delete_episode = episode.clone();
             let edit_dialog = dialog.downgrade();
@@ -895,7 +1191,13 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
     intensity.widget.add_css_class("popup-selector");
     content.append(&intensity.widget);
 
+    let next_hour = gtk4::glib::DateTime::now_local()
+        .ok()
+        .and_then(|now| now.add_minutes(60 - now.minute()).ok());
     let calendar = Calendar::new();
+    if let Some(next_hour) = next_hour.as_ref() {
+        calendar.select_day(next_hour);
+    }
     let date_picker = Button::with_label(&calendar_label(&calendar));
     button_icon(
         &date_picker,
@@ -904,7 +1206,7 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
     );
     date_picker.add_css_class("date-picker");
     date_picker.set_hexpand(false);
-    date_picker.set_size_request(204, 38);
+    date_picker.set_size_request(160, 32);
     let calendar_popover = gtk4::Popover::new();
     calendar_popover.set_child(Some(&calendar));
     calendar_popover.set_parent(&date_picker);
@@ -931,14 +1233,29 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
 
     let time = Entry::new();
     time.set_placeholder_text(Some("Time (HH:MM)"));
-    time.set_text("09:00");
+    let default_time = next_hour
+        .as_ref()
+        .and_then(|date| date.format("%H:%M").ok())
+        .map(|time| time.to_string())
+        .unwrap_or_else(|| "09:00".into());
+    time.set_text(&default_time);
     time.set_icon_from_icon_name(
         gtk4::EntryIconPosition::Secondary,
         Some("preferences-system-time-symbolic"),
     );
+    time.add_css_class("time-entry");
     gtk4::prelude::EntryExt::set_alignment(&time, 0.5);
+    time.set_width_chars(5);
+    time.set_max_width_chars(5);
     time.set_hexpand(false);
-    time.set_size_request(204, 38);
+    time.set_size_request(160, 32);
+    let time_format = highlight::HighlightSelector::new(&["AM", "PM", "24h"], 2);
+    time_format.widget.add_css_class("popup-selector");
+    time_format.widget.add_css_class("time-format-selector");
+    time_format.set_content_size(120, 32);
+    let time_controls = GtkBox::new(Orientation::Horizontal, 8);
+    time_controls.append(&time_format.widget);
+    time_controls.append(&time);
 
     let date_switch = gtk4::Switch::new();
     date_switch.add_css_class("reminder-switch");
@@ -968,7 +1285,7 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
     let time_row = GtkBox::new(Orientation::Horizontal, 14);
     time_row.add_css_class("date-time-row");
     time_row.append(&time_left);
-    time_row.append(&time);
+    time_row.append(&time_controls);
     date_time.append(&time_row);
     content.append(&date_time);
 
@@ -997,7 +1314,7 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
         }
     }
     date_picker.set_sensitive(date_switch.is_active());
-    time.set_sensitive(time_switch.is_active());
+    time_controls.set_sensitive(time_switch.is_active());
     let time_switch_ref = time_switch.downgrade();
     date_switch.connect_active_notify(move |date_switch| {
         if !date_switch.is_active() {
@@ -1020,11 +1337,26 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
             button.set_sensitive(date_switch.is_active());
         }
     });
-    let time_ref = time.downgrade();
+    let time_controls_ref = time_controls.downgrade();
     time_switch.connect_active_notify(move |time_switch| {
-        if let Some(entry) = time_ref.upgrade() {
-            entry.set_sensitive(time_switch.is_active());
+        if let Some(controls) = time_controls_ref.upgrade() {
+            controls.set_sensitive(time_switch.is_active());
         }
+    });
+    let last_time_format = Rc::new(Cell::new(2));
+    let last_time_format_ref = last_time_format.clone();
+    let time_ref = time.downgrade();
+    let time_format_ref = time_format.clone();
+    time_format.connect_changed(move || {
+        let format = time_format_ref.selected();
+        if let Some(entry) = time_ref.upgrade() {
+            if let Some((hour, minute)) =
+                parse_flash_time(&entry.text(), last_time_format_ref.get())
+            {
+                entry.set_text(&format_flash_time(hour, minute, format));
+            }
+        }
+        last_time_format_ref.set(format);
     });
 
     let earlier = GtkBox::new(Orientation::Vertical, 8);
@@ -1194,6 +1526,7 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
         db::RepeatRule::Interval { every, .. } => f64::from(*every),
         _ => 2.0,
     });
+    gtk4::prelude::EditableExt::set_alignment(&interval, 0.5);
     interval.set_size_request(64, 32);
     let unit = ComboBoxText::new();
     for value in ["minutes", "hours", "days", "weeks"] {
@@ -1300,7 +1633,19 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
     error.set_wrap(true);
     content.append(&error);
     dialog.set_default_response(ResponseType::Accept);
-    dialog_actions(&dialog, !editing, None);
+    let delete_button = existing.as_ref().map(|flash| {
+        let button = popup_delete_button("Delete Flash");
+        let delete_ui = ui.clone();
+        let delete_flash = flash.clone();
+        let edit_dialog = dialog.downgrade();
+        button.connect_clicked(move |_| {
+            if let Some(edit_dialog) = edit_dialog.upgrade() {
+                confirm_delete_flash(&delete_ui, delete_flash.clone(), &edit_dialog);
+            }
+        });
+        button
+    });
+    dialog_actions(&dialog, !editing, delete_button.as_ref());
     let ui = ui.clone();
     dialog.connect_response(move |dialog, response| {
         if response != ResponseType::Accept {
@@ -1356,30 +1701,28 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
             db::RepeatRule::None
         };
         let due = if date_switch.is_active() {
-            let text = if time_switch.is_active() {
-                time.text().to_string()
+            let (hour, minute) = if time_switch.is_active() {
+                match parse_flash_time(&time.text(), time_format.selected()) {
+                    Some(time) => time,
+                    None => {
+                        error.set_text(if time_format.selected() == 2 {
+                            "Enter a valid 24-hour time (00:00–23:59)."
+                        } else {
+                            "Enter a valid 12-hour time (01:00–12:59)."
+                        });
+                        return;
+                    }
+                }
             } else {
-                "09:00".to_string()
+                (9, 0)
             };
-            let parts: Vec<_> = text.split(':').collect();
-            let valid = parts.len() == 2
-                && parts[0].len() == 2
-                && parts[1].len() == 2
-                && parts[0].bytes().all(|b| b.is_ascii_digit())
-                && parts[1].bytes().all(|b| b.is_ascii_digit())
-                && parts[0].parse::<u8>().unwrap_or(99) < 24
-                && parts[1].parse::<u8>().unwrap_or(99) < 60;
-            if !valid {
-                error.set_text("Enter a valid time in 24-hour HH:MM format.");
-                return;
-            }
             let date = calendar.date();
             let when = match gtk4::glib::DateTime::from_local(
                 date.year(),
                 date.month(),
                 date.day_of_month(),
-                parts[0].parse().unwrap(),
-                parts[1].parse().unwrap(),
+                hour,
+                minute,
                 0.0,
             ) {
                 Ok(when) => when,

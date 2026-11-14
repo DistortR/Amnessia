@@ -6,6 +6,13 @@ window { color: #edf0fa; }
 .title { font-size: 25px; font-weight: 700; }
 .flash-surface { border-radius: 8px; }
 .flash-row { background: rgba(39, 42, 60, 0.48); border-radius: 8px; padding: 12px; }
+.flash-header { min-height: 38px; }
+.flash-notes { margin-top: 8px; }
+.flash-note-icon { color: #b794f4; }
+.flash-note-text { background: rgba(13, 15, 28, 0.42); color: rgba(237, 240, 250, 0.85); border: 0; border-radius: 6px; font-size: 13px; padding: 0; }
+.flash-note-text text { background: transparent; color: rgba(237, 240, 250, 0.85); }
+.flash-notes-toggle { min-width: 34px; min-height: 34px; padding: 4px; background: transparent; border: 0; box-shadow: none; color: #d5d2e1; }
+.flash-notes-toggle:hover { background: rgba(190, 185, 210, 0.12); border-radius: 7px; }
 .resolved { opacity: 0.55; text-decoration: line-through; }
 .status { color: #bbb5d1; font-size: 12px; }
 .episode { padding: 9px; }
@@ -17,6 +24,11 @@ window { color: #edf0fa; }
 .light .sidebar { background: rgba(247, 246, 252, 0.30); color: #202132; }
 .light .content { background: rgba(240, 240, 250, 0.86); color: #202132; }
 .light .flash-row { background: rgba(255, 255, 255, 0.64); color: #202132; }
+.light .flash-note-icon { color: #7550ac; }
+.light .flash-note-text { background: rgba(255, 255, 255, 0.44); color: rgba(32, 33, 50, 0.85); }
+.light .flash-note-text text { color: rgba(32, 33, 50, 0.85); }
+.light .flash-notes-toggle { color: #3d3650; background: transparent; }
+.light .flash-notes-toggle:hover { background: rgba(60, 50, 80, 0.10); }
 .light .section-label, .light .status { color: #5e5b70; }
 .light button, .light entry { background: #e0deed; color: #202132; }
 .light .selected-episode { background: #d2bdfa; color: #2c1947; }
@@ -64,22 +76,27 @@ switch.reminder-switch:checked { background-color: #7c4dff; }
 .dialog-cancel:hover { background: rgba(190, 185, 210, 0.15); }
 .dialog-primary { background: #594187; color: #fff; }
 .dialog-primary:hover { background: #704faf; }
+.dialog-danger { background: #9c344b; color: #fff; }
+.dialog-danger:hover { background: #b4435c; }
 .light .dialog-cancel:hover { background: rgba(60, 50, 80, 0.12); }
 .light .dialog-primary { background: #594187; color: #fff; }
 
 /* Popup proportions and palette follow the supplied reference. */
 .reference-dialog { background: #1e1e2b; color: #e3e3ee; border: 1px solid #333047; border-radius: 11px; font-family: sans-serif; font-size: 14px; box-shadow: none; }
 .reference-dialog .popup-heading { font-size: 19px; font-weight: 500; margin: 0 0 0 31px; }
-.reference-dialog .popup-label { font-size: 12px; font-weight: 400; letter-spacing: 1px; color: #9290a8; margin-bottom: 6px; }
+.reference-dialog .popup-label { font-size: 14px; font-weight: 500; letter-spacing: 0.7px; line-height: 1.25; color: #9290a8; margin-bottom: 6px; }
 .reference-dialog .popup-section { margin-top: 16px; }
-.reference-dialog entry { min-height: 36px; padding: 0 11px; background: #11111b; color: #e3e3ee; border: 1px solid #363348; border-radius: 6px; font-size: 14px; box-shadow: none; }
+.reference-dialog .confirmation-copy { margin-top: 4px; color: #c9c6d7; font-size: 14px; }
+.reference-dialog entry { min-height: 32px; padding: 0 11px; background: #11111b; color: #e3e3ee; border: 1px solid #363348; border-radius: 6px; font-size: 14px; box-shadow: none; }
+.reference-dialog entry:disabled { color: #9290a8; }
 .reference-dialog entry:focus-within { border-color: #a98aff; }
 .reference-dialog .popup-selector { min-height: 44px; border: 1px solid #363348; border-radius: 9px; background: #11111b; }
 .reference-dialog .highlight-button { min-height: 34px; padding: 0 6px; margin: 3px 2px; border: 1px solid #45444e; border-radius: 8px; background: transparent; font-size: 16px; font-weight: 400; }
 .reference-dialog .highlight-button:checked { border-color: #9c80cc; background: transparent; }
 .reference-dialog .date-time-controls { padding: 0; }
-.reference-dialog .date-time-row { min-height: 38px; }
-.reference-dialog .date-picker { min-height: 36px; padding: 0 11px; background: #11111b; border: 1px solid #363348; border-radius: 6px; font-size: 14px; box-shadow: none; }
+.reference-dialog .date-time-row { min-height: 32px; }
+.reference-dialog .date-picker { min-width: 160px; max-width: 160px; min-height: 32px; padding: 0 11px; background: #11111b; border: 1px solid #363348; border-radius: 6px; font-size: 14px; box-shadow: none; }
+.reference-dialog entry.time-entry { min-width: 160px; max-width: 160px; }
 .reference-dialog switch.reminder-switch { min-width: 37px; min-height: 22px; border: 0; border-radius: 12px; background: #38364e; }
 .reference-dialog switch.reminder-switch:checked { background: #7c4dff; }
 .reference-dialog switch.reminder-switch slider { min-width: 17px; min-height: 17px; margin: 2px; border: 0; border-radius: 10px; background: #fff; box-shadow: none; }
@@ -94,11 +111,13 @@ switch.reminder-switch:checked { background-color: #7c4dff; }
 .reference-dialog .episode-color-custom { border-radius: 9px; }
 .reference-dialog .popup-divider { margin: 17px 0 16px; min-height: 1px; background: #333047; }
 .reference-dialog .popup-footer { margin: 0; }
-.reference-dialog .dialog-cancel, .reference-dialog .dialog-primary { padding: 0 14px; min-width: 61px; min-height: 36px; font-size: 16px; border-radius: 9px; box-shadow: none; }
+.reference-dialog .dialog-cancel, .reference-dialog .dialog-primary, .reference-dialog .dialog-danger { padding: 0 14px; min-width: 61px; min-height: 36px; font-size: 16px; border-radius: 9px; box-shadow: none; }
 .reference-dialog .dialog-cancel { background: #1e1e2b; border: 1px solid #4a4854; color: #eee; }
 .reference-dialog .dialog-cancel:hover { background: #2a293a; }
 .reference-dialog .dialog-primary { background: #5d3a9c; border: 1px solid #5d3a9c; color: #fff; }
 .reference-dialog .dialog-primary:hover { background: #6c46ae; }
+.reference-dialog .dialog-danger { background: #9c344b; border: 1px solid #9c344b; color: #fff; }
+.reference-dialog .dialog-danger:hover { background: #b4435c; border-color: #b4435c; }
 .reference-dialog combobox button, .reference-dialog spinbutton { min-height: 36px; border: 1px solid #363348; border-radius: 6px; background: #11111b; font-size: 14px; }
 .reference-dialog .weekday-button { font-size: 11px; }
 
@@ -106,10 +125,12 @@ switch.reminder-switch:checked { background-color: #7c4dff; }
 .reference-dialog .highlight-button, .reference-dialog .highlight-button:checked { border-color: transparent; background: transparent; background-image: none; box-shadow: none; outline: none; }
 .reference-dialog .highlight-button:focus-visible { outline: 1px solid #aa88ff; }
 .reference-dialog .popup-selector:disabled { opacity: 0.45; }
+.reference-dialog .time-format-selector { min-height: 32px; }
+.reference-dialog .time-format-selector .highlight-button { min-height: 20px; margin: 2px 1px; padding: 0 2px; font-size: 13px; }
 
 .reference-dialog { font-size: 16px; }
 .reference-dialog .popup-heading { font-size: 22px; margin-bottom: 12px; }
-.reference-dialog .date-time-row { min-height: 38px; }
+.reference-dialog .date-time-row { min-height: 32px; }
 .reference-dialog .episode-icon { font-size: 22px; }
 .reference-dialog .popup-section { margin-top: 12px; }
 
@@ -125,7 +146,7 @@ switch.reminder-switch:checked { background-color: #7c4dff; }
 .reference-dialog > box, .reference-dialog > contents { background: transparent; background-image: none; }
 .reference-dialog .popup-heading image { -gtk-icon-size: 22px; color: #b794f4; }
 .reference-dialog .popup-label image { -gtk-icon-size: 14px; }
-.reference-dialog .episode-delete { min-width: 38px; min-height: 38px; padding: 0; color: #f08b9a; background: rgba(150, 38, 58, 0.18); border: 1px solid rgba(240, 120, 140, 0.35); border-radius: 9px; box-shadow: none; }
-.reference-dialog .episode-delete:hover { background: rgba(170, 45, 65, 0.34); border-color: #e97889; }
+.reference-dialog .popup-delete { min-width: 38px; min-height: 38px; padding: 0; color: #f08b9a; background: rgba(150, 38, 58, 0.18); border: 1px solid rgba(240, 120, 140, 0.35); border-radius: 9px; box-shadow: none; }
+.reference-dialog .popup-delete:hover { background: rgba(170, 45, 65, 0.34); border-color: #e97889; }
 
 .popup-scrim { background: rgba(0, 0, 0, 0.04); }
