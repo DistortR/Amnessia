@@ -467,10 +467,20 @@ fn popup_content(dialog: &Dialog, width: i32, heading: &str) -> GtkBox {
     content
 }
 
-fn dialog_actions(dialog: &Dialog, shine_create: bool) {
+fn dialog_actions(dialog: &Dialog, shine_create: bool, left_action: Option<&Button>) {
     let footer = GtkBox::new(Orientation::Horizontal, 16);
     footer.add_css_class("popup-footer");
-    footer.set_halign(gtk4::Align::End);
+    footer.set_halign(if left_action.is_some() {
+        gtk4::Align::Fill
+    } else {
+        gtk4::Align::End
+    });
+    if let Some(action) = left_action {
+        footer.append(action);
+        let spacer = GtkBox::new(Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
+        footer.append(&spacer);
+    }
     for (response, class) in [
         (ResponseType::Cancel, "dialog-cancel"),
         (ResponseType::Accept, "dialog-primary"),
@@ -509,6 +519,39 @@ fn dialog_actions(dialog: &Dialog, shine_create: bool) {
     divider.add_css_class("popup-divider");
     dialog.content_area().append(&divider);
     dialog.content_area().append(&footer);
+}
+
+fn confirm_delete_episode(ui: &Ui, episode: db::Episode, edit_dialog: &Dialog) {
+    let confirmation = gtk4::AlertDialog::builder()
+        .message(format!("Delete {}?", episode.name))
+        .detail("This permanently deletes the Episode and all its Flashes. This cannot be undone.")
+        .buttons(["Cancel", "Delete"])
+        .cancel_button(0)
+        .default_button(0)
+        .build();
+    let parent = ui.window.clone();
+    let ui = ui.clone();
+    let edit_dialog = edit_dialog.clone();
+    confirmation.choose(
+        Some(&parent),
+        None::<&gtk4::gio::Cancellable>,
+        move |result| {
+            if !matches!(result, Ok(1)) {
+                return;
+            }
+            match db::delete_episode(&ui.db, episode.id) {
+                Ok(default_id) => {
+                    ui.loaded_episodes.borrow_mut().remove(&episode.id);
+                    if ui.selected.get() == Some(episode.id) {
+                        ui.selected.set(Some(default_id));
+                    }
+                    refresh_episodes(&ui);
+                    dismiss_popup(&edit_dialog);
+                }
+                Err(error) => show_error(&ui, error),
+            }
+        },
+    );
 }
 
 fn rgba_hex(color: &gtk4::gdk::RGBA) -> String {
@@ -749,7 +792,29 @@ fn episode_dialog(ui: &Ui, existing: Option<db::Episode>) {
     error.set_wrap(true);
     content.append(&error);
     dialog.set_default_response(ResponseType::Accept);
-    dialog_actions(&dialog, !editing);
+    let delete_button = existing
+        .as_ref()
+        .filter(|episode| !episode.is_default)
+        .map(|episode| {
+            let button = Button::new();
+            let icon = gtk4::Image::from_icon_name("user-trash-symbolic");
+            icon.set_pixel_size(18);
+            button.set_child(Some(&icon));
+            button.add_css_class("episode-delete");
+            button.set_size_request(38, 38);
+            button.set_tooltip_text(Some("Delete Episode"));
+            button.update_property(&[gtk4::accessible::Property::Label("Delete Episode")]);
+            let delete_ui = ui.clone();
+            let delete_episode = episode.clone();
+            let edit_dialog = dialog.downgrade();
+            button.connect_clicked(move |_| {
+                if let Some(edit_dialog) = edit_dialog.upgrade() {
+                    confirm_delete_episode(&delete_ui, delete_episode.clone(), &edit_dialog);
+                }
+            });
+            button
+        });
+    dialog_actions(&dialog, !editing, delete_button.as_ref());
     let ui = ui.clone();
     dialog.connect_response(move |dialog, response| {
         if response != ResponseType::Accept {
@@ -1235,7 +1300,7 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
     error.set_wrap(true);
     content.append(&error);
     dialog.set_default_response(ResponseType::Accept);
-    dialog_actions(&dialog, !editing);
+    dialog_actions(&dialog, !editing, None);
     let ui = ui.clone();
     dialog.connect_response(move |dialog, response| {
         if response != ResponseType::Accept {
@@ -1561,6 +1626,12 @@ fn build(app: &Application) {
     side_overlay.set_width_request(240);
     side_overlay.set_vexpand(true);
     side_overlay.set_child(Some(&sidebar_blur::SidebarBlur::new(&bg, 0.0)));
+    let side_revealer = gtk4::Revealer::new();
+    side_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideLeft);
+    side_revealer.set_transition_duration(240);
+    side_revealer.set_reveal_child(true);
+    side_revealer.set_vexpand(true);
+    side_revealer.set_child(Some(&side_overlay));
     let side = GtkBox::new(Orientation::Vertical, 12);
     side.add_css_class("sidebar");
     side.set_width_request(240);
@@ -1602,22 +1673,9 @@ fn build(app: &Application) {
         .child(&episodes)
         .build();
     side.append(&scroll);
-    let content = GtkBox::new(Orientation::Vertical, 16);
-    content.add_css_class("content");
-    content.set_hexpand(true);
-    let top = GtkBox::new(Orientation::Horizontal, 12);
-    let toggle = Button::with_label("☰");
-    toggle.set_tooltip_text(Some("Show or hide Episodes"));
-    side_overlay.add_overlay(&side);
-    let side_clone = side_overlay.clone();
-    toggle.connect_clicked(move |_| side_clone.set_visible(!side_clone.is_visible()));
-    let title = Label::new(Some("Select an Episode"));
-    title.set_hexpand(true);
-    title.set_xalign(0.0);
-    title.add_css_class("title");
-    top.append(&toggle);
-    top.append(&title);
+    let sidebar_actions = GtkBox::new(Orientation::Horizontal, 8);
     let theme = Button::with_label("☀ Light");
+    theme.set_hexpand(true);
     let theme_root = root.clone();
     theme.connect_clicked(move |button| {
         if theme_root.has_css_class("light") {
@@ -1628,12 +1686,47 @@ fn build(app: &Application) {
             button.set_label("☾ Dark");
         }
     });
-    top.append(&theme);
+    sidebar_actions.append(&theme);
     let quit = Button::with_label("Quit");
+    quit.set_hexpand(true);
     quit.set_tooltip_text(Some("Quit Amnessia and stop reminders"));
     let quit_app = app.clone();
     quit.connect_clicked(move |_| quit_app.quit());
-    top.append(&quit);
+    sidebar_actions.append(&quit);
+    side.append(&sidebar_actions);
+
+    let content = GtkBox::new(Orientation::Vertical, 16);
+    content.add_css_class("content");
+    content.set_hexpand(true);
+    let top = GtkBox::new(Orientation::Horizontal, 12);
+    let toggle = Button::new();
+    let toggle_icon = gtk4::Image::from_icon_name("sidebar-hide-symbolic");
+    toggle.set_child(Some(&toggle_icon));
+    toggle.set_tooltip_text(Some("Hide Episodes"));
+    toggle.update_property(&[gtk4::accessible::Property::Label("Toggle Episodes sidebar")]);
+    side_overlay.add_overlay(&side);
+    let sidebar = side_revealer.clone();
+    let sidebar_icon = toggle_icon.clone();
+    toggle.connect_clicked(move |button| {
+        let show_sidebar = !sidebar.reveals_child();
+        sidebar.set_reveal_child(show_sidebar);
+        sidebar_icon.set_icon_name(Some(if show_sidebar {
+            "sidebar-hide-symbolic"
+        } else {
+            "sidebar-show-symbolic"
+        }));
+        button.set_tooltip_text(Some(if show_sidebar {
+            "Hide Episodes"
+        } else {
+            "Show Episodes"
+        }));
+    });
+    let title = Label::new(Some("Select an Episode"));
+    title.set_hexpand(true);
+    title.set_xalign(0.0);
+    title.add_css_class("title");
+    top.append(&toggle);
+    top.append(&title);
     content.append(&top);
     let controls = GtkBox::new(Orientation::Horizontal, 8);
     let add_flash = Button::with_label("+ Add Flash");
@@ -1652,7 +1745,7 @@ fn build(app: &Application) {
         .child(&flashes)
         .build();
     content.append(&flash_scroll);
-    root.append(&side_overlay);
+    root.append(&side_revealer);
     root.append(&content);
     overlay.add_overlay(&root);
     let popup_layer = Overlay::new();

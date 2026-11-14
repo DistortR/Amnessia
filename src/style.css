@@ -125,5 +125,7 @@ switch.reminder-switch:checked { background-color: #7c4dff; }
 .reference-dialog > box, .reference-dialog > contents { background: transparent; background-image: none; }
 .reference-dialog .popup-heading image { -gtk-icon-size: 22px; color: #b794f4; }
 .reference-dialog .popup-label image { -gtk-icon-size: 14px; }
+.reference-dialog .episode-delete { min-width: 38px; min-height: 38px; padding: 0; color: #f08b9a; background: rgba(150, 38, 58, 0.18); border: 1px solid rgba(240, 120, 140, 0.35); border-radius: 9px; box-shadow: none; }
+.reference-dialog .episode-delete:hover { background: rgba(170, 45, 65, 0.34); border-color: #e97889; }
 
 .popup-scrim { background: rgba(0, 0, 0, 0.04); }

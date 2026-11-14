@@ -213,6 +213,35 @@ pub fn update_episode(
     )?;
     Ok(())
 }
+
+pub fn delete_episode(db: &Connection, id: i64) -> std::result::Result<i64, String> {
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let default_id = tx
+        .query_row("SELECT id FROM episodes WHERE is_default = 1", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| error.to_string())?;
+    if id == default_id {
+        return Err("The default Static Episode cannot be deleted.".into());
+    }
+    tx.execute("DELETE FROM flashes WHERE episode_id = ?1", [id])
+        .map_err(|error| error.to_string())?;
+    if tx
+        .execute(
+            "DELETE FROM episodes WHERE id = ?1 AND is_default = 0",
+            [id],
+        )
+        .map_err(|error| error.to_string())?
+        == 0
+    {
+        return Err("This Episode no longer exists.".into());
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(default_id)
+}
+
 pub fn add_flash(
     db: &Connection,
     episode: i64,

@@ -46,7 +46,5 @@ impl Tray for AmnessiaTray {
 }
 
 pub fn start(sender: Sender<Action>) -> Result<ksni::blocking::Handle<AmnessiaTray>, ksni::Error> {
-    AmnessiaTray { sender }
-        .assume_sni_available(true)
-        .spawn()
+    AmnessiaTray { sender }.assume_sni_available(true).spawn()
 }
