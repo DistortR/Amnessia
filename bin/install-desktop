@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Install Amnessia's icon and development launcher for the current user."""
+"""Install Amnessia's icon, launcher, command, and login autostart."""
 import os
 from pathlib import Path
 import shutil
+import time
 
 project = Path(__file__).resolve().parent.parent
 binary = project / 'target/release/amnessia-demo'
@@ -11,11 +12,32 @@ if not binary.is_file():
 
 configured = os.environ.get('XDG_DATA_HOME', '')
 data = Path(configured) if configured and Path(configured).is_absolute() else Path.home() / '.local/share'
+configured = os.environ.get('XDG_CONFIG_HOME', '')
+config = Path(configured) if configured and Path(configured).is_absolute() else Path.home() / '.config'
 icon = data / 'icons/hicolor/scalable/apps/com.amnessia.App-triangle.svg'
 desktop = data / 'applications/com.amnessia.App.desktop'
+hypr_autostart = config / 'hypr/autostart.lua'
+legacy_autostart = config / 'autostart/com.amnessia.App.desktop'
+command = Path.home() / '.local/bin/amnessia'
 icon.parent.mkdir(parents=True, exist_ok=True)
 desktop.parent.mkdir(parents=True, exist_ok=True)
+hypr_autostart.parent.mkdir(parents=True, exist_ok=True)
+command.parent.mkdir(parents=True, exist_ok=True)
+if command.is_symlink() and command.resolve() != binary.resolve():
+    raise SystemExit(f'Refusing to replace existing command: {command}')
+if command.exists() and command.resolve() != binary.resolve():
+    raise SystemExit(f'Refusing to replace existing command: {command}')
+if not command.exists():
+    command.symlink_to(binary)
+startup_call = 'o.exec_on_start("amnessia")'
+startup_config = hypr_autostart.read_text() if hypr_autostart.exists() else '-- Extra autostart processes.\n'
+if startup_call not in startup_config:
+    if hypr_autostart.exists():
+        backup = hypr_autostart.with_name(f'autostart.lua.bak.{int(time.time())}')
+        shutil.copy2(hypr_autostart, backup)
+    hypr_autostart.write_text(startup_config.rstrip() + f'\n{startup_call}\n')
+legacy_autostart.unlink(missing_ok=True)
 shutil.copyfile(project / 'assets/com.amnessia.App.svg', icon)
 executable = str(binary).replace('%', '%%').replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$')
 desktop.write_text(f'''[Desktop Entry]\nType=Application\nName=Amnessia\nComment=Keep track of your Flashes\nExec="{executable}"\nIcon=com.amnessia.App-triangle\nTerminal=false\nCategories=Utility;\nStartupWMClass=com.amnessia.App\n''')
-print(f'Installed icon: {icon}\nInstalled launcher: {desktop}')
+print(f'Installed icon: {icon}\nInstalled launcher: {desktop}\nInstalled command: {command}\nEnabled Hyprland autostart: {hypr_autostart}')

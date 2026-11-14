@@ -85,6 +85,7 @@ switch.reminder-switch:checked { background-color: #7c4dff; }
 .reference-dialog switch.reminder-switch slider { min-width: 17px; min-height: 17px; margin: 2px; border: 0; border-radius: 10px; background: #fff; box-shadow: none; }
 .reference-dialog .reminder-option { padding: 0 9px; min-height: 29px; font-size: 16px; border: 1px solid #4a4854; border-radius: 9px; background: #1e1e2b; }
 .reference-dialog .reminder-option:checked { color: #d1c6ee; background: #2e234d; border-color: #aa88ff; }
+.reference-dialog .reminder-option.reminder-custom-selected { color: #d1c6ee; background: #2e234d; border-color: #aa88ff; }
 .reference-dialog .reminder-custom { border-style: dashed; }
 .reference-dialog .episode-icon { padding: 0; min-width: 42px; min-height: 42px; border: 1px solid #4a4854; border-radius: 9px; background: #1e1e2b; }
 .reference-dialog .episode-icon:hover { background: #292538; border-color: #aa88ff; }

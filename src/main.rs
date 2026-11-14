@@ -3,6 +3,7 @@ mod blur;
 mod db;
 mod filters;
 mod highlight;
+mod repeat;
 mod shine;
 mod sidebar_blur;
 mod tray;
@@ -22,6 +23,13 @@ use std::{
 const DEFAULT_EPISODE_COLOR: &str = "#7C4DFF";
 const EPISODE_EMOJIS: [&str; 7] = ["💼", "🏠", "🧠", "❤️", "📚", "🎯", "💡"];
 const EPISODE_COLORS: [&str; 5] = ["#7C4DFF", "#3B82F6", "#14B8A6", "#EC4899", "#F59E0B"];
+const EARLY_REMINDER_OPTIONS: [(&str, i64); 5] = [
+    ("5 min", 5),
+    ("15 min", 15),
+    ("30 min", 30),
+    ("1 hour", 60),
+    ("1 day", 1_440),
+];
 
 #[derive(Clone)]
 struct Ui {
@@ -71,6 +79,7 @@ fn refresh_flashes(ui: &Ui) {
                     status,
                     intensity,
                     due_at,
+                    ..
                 } = flash.clone();
                 let row = GtkBox::new(Orientation::Horizontal, 12);
                 row.add_css_class("flash-row");
@@ -131,18 +140,40 @@ fn refresh_flashes(ui: &Ui) {
                 edit.set_child(Some(&details));
                 edit.set_tooltip_text(Some("Edit Flash"));
                 let edit_ui = ui.clone();
-                edit.connect_clicked(move |_| flash_dialog(&edit_ui, Some(flash.clone())));
+                let edit_flash = flash.clone();
+                edit.connect_clicked(move |_| flash_dialog(&edit_ui, Some(edit_flash.clone())));
                 let cloned = ui.clone();
+                let status_flash = flash.clone();
                 button.connect_clicked(move |_| {
                     let next = if status == "resolved" {
                         "active"
                     } else {
                         "resolved"
                     };
-                    match db::set_status(&cloned.db, id, next) {
-                        Ok(()) => {
-                            cloned.error.set_text("");
-                            refresh_flashes(&cloned);
+                    let next_due = (|| -> Result<_, gtk4::glib::BoolError> {
+                        if next != "active" || !status_flash.repeat_rule.is_repeating() {
+                            return Ok(None);
+                        }
+                        let Some(due) = status_flash.due_at.as_deref() else {
+                            return Ok(None);
+                        };
+                        let due_date = gtk4::glib::DateTime::from_iso8601(due, None)?;
+                        let now = gtk4::glib::DateTime::now_utc()?;
+                        if due_date.to_unix() <= now.to_unix() {
+                            repeat::next_due_at(&status_flash.repeat_rule, due, &now)
+                        } else {
+                            Ok(None)
+                        }
+                    })();
+                    match next_due {
+                        Ok(next_due) => {
+                            match db::set_status(&cloned.db, id, next, next_due.as_deref()) {
+                                Ok(()) => {
+                                    cloned.error.set_text("");
+                                    refresh_flashes(&cloned);
+                                }
+                                Err(e) => show_error(&cloned, e),
+                            }
                         }
                         Err(e) => show_error(&cloned, e),
                     }
@@ -495,6 +526,26 @@ fn calendar_label(calendar: &Calendar) -> String {
         .format("%m/%d/%Y")
         .map(|date| date.to_string())
         .unwrap_or_else(|_| "Choose date".into())
+}
+
+fn format_custom_reminder(minutes: i64) -> String {
+    if minutes % 1_440 == 0 {
+        format!("Custom ({}d)", minutes / 1_440)
+    } else if minutes % 60 == 0 {
+        format!("Custom ({}h)", minutes / 60)
+    } else {
+        format!("Custom ({minutes}m)")
+    }
+}
+
+fn custom_reminder_parts(minutes: i64) -> (i64, u32) {
+    if minutes % 1_440 == 0 {
+        (minutes / 1_440, 2)
+    } else if minutes % 60 == 0 {
+        (minutes / 60, 1)
+    } else {
+        (minutes, 0)
+    }
 }
 
 fn episode_dialog(ui: &Ui, existing: Option<db::Episode>) {
@@ -919,23 +970,130 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
     earlier_grid.set_column_spacing(8);
     earlier_grid.set_row_spacing(8);
     earlier_grid.set_column_homogeneous(true);
-    for (index, label) in ["5 min", "15 min", "30 min", "1 hour", "1 day", "Custom"]
-        .iter()
-        .enumerate()
-    {
+    let saved_early = existing
+        .as_ref()
+        .map(|flash| flash.early_reminders.as_slice())
+        .unwrap_or(&[]);
+    let mut early_buttons = Vec::new();
+    for (index, (label, offset)) in EARLY_REMINDER_OPTIONS.iter().enumerate() {
         let button = gtk4::ToggleButton::with_label(label);
         button.add_css_class("reminder-option");
         button.set_size_request(80, 32);
-        if index == 5 {
-            button.add_css_class("reminder-custom");
-        }
+        button.set_active(saved_early.contains(offset));
         let tilted = blur::BlurRow::new(&button, false, 6.0)
             .with_hover_lift(4.0)
             .with_hover_tilt(10.0);
         tilted.set_overflow(gtk4::Overflow::Visible);
         earlier_grid.attach(&tilted, index as i32 % 4, index as i32 / 4, 1, 1);
+        early_buttons.push(button);
     }
+    let saved_custom = saved_early.iter().copied().find(|offset| {
+        !EARLY_REMINDER_OPTIONS
+            .iter()
+            .any(|(_, standard)| standard == offset)
+    });
+    let custom_offset = Rc::new(Cell::new(saved_custom));
+    let custom_selected = Rc::new(Cell::new(saved_custom.is_some()));
+    let custom_button = Button::with_label(
+        &saved_custom
+            .map(format_custom_reminder)
+            .unwrap_or_else(|| "Custom".into()),
+    );
+    custom_button.add_css_class("reminder-option");
+    custom_button.add_css_class("reminder-custom");
+    if saved_custom.is_some() {
+        custom_button.add_css_class("reminder-custom-selected");
+    }
+    custom_button.set_size_request(80, 32);
+    let custom_revealer = gtk4::Revealer::new();
+    custom_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideDown);
+    custom_revealer.set_transition_duration(140);
+    custom_revealer.set_reveal_child(false);
+    let custom_form = GtkBox::new(Orientation::Horizontal, 8);
+    custom_form.add_css_class("custom-reminder-form");
+    custom_form.set_margin_top(8);
+    custom_form.set_margin_bottom(8);
+    custom_form.set_margin_start(8);
+    custom_form.set_margin_end(8);
+    let custom_value = gtk4::SpinButton::with_range(1.0, 525_600.0, 1.0);
+    let custom_unit = ComboBoxText::new();
+    for unit in ["minutes", "hours", "days"] {
+        custom_unit.append_text(unit);
+    }
+    let (initial_custom_value, initial_custom_unit) =
+        saved_custom.map(custom_reminder_parts).unwrap_or((30, 0));
+    custom_value.set_value(initial_custom_value as f64);
+    custom_unit.set_active(Some(initial_custom_unit));
+    let custom_value_ref = custom_value.downgrade();
+    custom_unit.connect_changed(move |unit| {
+        let maximum = match unit.active() {
+            Some(1) => 8_760.0,
+            Some(2) => 365.0,
+            _ => 525_600.0,
+        };
+        if let Some(value) = custom_value_ref.upgrade() {
+            value.set_range(1.0, maximum);
+        }
+    });
+    let apply_custom = Button::with_label("Set");
+    let remove_custom = Button::with_label("Remove");
+    custom_form.append(&custom_value);
+    custom_form.append(&custom_unit);
+    custom_form.append(&remove_custom);
+    custom_form.append(&apply_custom);
+    custom_revealer.set_child(Some(&custom_form));
+    let custom_button_ref = custom_button.downgrade();
+    let custom_revealer_ref = custom_revealer.downgrade();
+    let custom_offset_ref = custom_offset.clone();
+    let custom_selected_ref = custom_selected.clone();
+    apply_custom.connect_clicked(move |_| {
+        let multiplier = match custom_unit.active() {
+            Some(1) => 60,
+            Some(2) => 1_440,
+            _ => 1,
+        };
+        let offset = i64::from(custom_value.value_as_int()) * multiplier;
+        if !(1..=525_600).contains(&offset) {
+            return;
+        }
+        custom_offset_ref.set(Some(offset));
+        custom_selected_ref.set(true);
+        if let Some(button) = custom_button_ref.upgrade() {
+            button.set_label(&format_custom_reminder(offset));
+            button.add_css_class("reminder-custom-selected");
+        }
+        if let Some(revealer) = custom_revealer_ref.upgrade() {
+            revealer.set_reveal_child(false);
+        }
+    });
+    let custom_button_ref = custom_button.downgrade();
+    let custom_revealer_ref = custom_revealer.downgrade();
+    let custom_offset_ref = custom_offset.clone();
+    let custom_selected_ref = custom_selected.clone();
+    remove_custom.connect_clicked(move |_| {
+        custom_offset_ref.set(None);
+        custom_selected_ref.set(false);
+        if let Some(button) = custom_button_ref.upgrade() {
+            button.set_label("Custom");
+            button.remove_css_class("reminder-custom-selected");
+        }
+        if let Some(revealer) = custom_revealer_ref.upgrade() {
+            revealer.set_reveal_child(false);
+        }
+    });
+    let custom_revealer_ref = custom_revealer.downgrade();
+    custom_button.connect_clicked(move |_| {
+        if let Some(revealer) = custom_revealer_ref.upgrade() {
+            revealer.set_reveal_child(!revealer.reveals_child());
+        }
+    });
+    let custom_tilt = blur::BlurRow::new(&custom_button, false, 6.0)
+        .with_hover_lift(4.0)
+        .with_hover_tilt(10.0);
+    custom_tilt.set_overflow(gtk4::Overflow::Visible);
+    earlier_grid.attach(&custom_tilt, 1, 1, 1, 1);
     earlier.append(&earlier_grid);
+    earlier.append(&custom_revealer);
     content.append(&earlier);
 
     let repeat_switch = gtk4::Switch::new();
@@ -949,7 +1107,14 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
     repeat_header.append(&repeat_label);
     content.append(&repeat_header);
 
-    let repeat_modes = highlight::HighlightSelector::new(&["By time", "By weekdays"], 0);
+    let existing_repeat = existing
+        .as_ref()
+        .map(|flash| flash.repeat_rule.clone())
+        .unwrap_or(db::RepeatRule::None);
+    let repeat_mode_index =
+        usize::from(matches!(&existing_repeat, db::RepeatRule::Weekdays { .. }));
+    let repeat_modes =
+        highlight::HighlightSelector::new(&["By time", "By weekdays"], repeat_mode_index);
     repeat_modes.set_icons(&["alarm-symbolic", "x-office-calendar-symbolic"]);
     repeat_modes.widget.add_css_class("popup-selector");
     let repeat_stack = gtk4::Stack::new();
@@ -960,13 +1125,25 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
     every.set_valign(gtk4::Align::Center);
     every.append(&Label::new(Some("Every")));
     let interval = gtk4::SpinButton::with_range(1.0, 365.0, 1.0);
-    interval.set_value(2.0);
+    interval.set_value(match &existing_repeat {
+        db::RepeatRule::Interval { every, .. } => f64::from(*every),
+        _ => 2.0,
+    });
     interval.set_size_request(64, 32);
     let unit = ComboBoxText::new();
     for value in ["minutes", "hours", "days", "weeks"] {
         unit.append_text(value);
     }
-    unit.set_active(Some(1));
+    let repeat_unit_index = match &existing_repeat {
+        db::RepeatRule::Interval { unit, .. } => match unit {
+            db::RepeatUnit::Minutes => 0,
+            db::RepeatUnit::Hours => 1,
+            db::RepeatUnit::Days => 2,
+            db::RepeatUnit::Weeks => 3,
+        },
+        _ => 1,
+    };
+    unit.set_active(Some(repeat_unit_index));
     every.append(&interval);
     every.append(&unit);
     repeat_stack.add_named(&every, Some("time"));
@@ -982,20 +1159,38 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
         "Saturday",
         "Sunday",
     ];
-    for (day, name) in ["M", "T", "W", "T", "F", "S", "S"].iter().zip(day_names) {
+    let saved_weekdays = match &existing_repeat {
+        db::RepeatRule::Weekdays { days } => *days,
+        _ => 0,
+    };
+    let mut weekday_buttons = Vec::new();
+    for (index, (day, name)) in ["M", "T", "W", "T", "F", "S", "S"]
+        .iter()
+        .zip(day_names)
+        .enumerate()
+    {
         let button = gtk4::ToggleButton::with_label(day);
         button.add_css_class("weekday-button");
         button.set_size_request(32, 32);
         button.set_tooltip_text(Some(name));
         button.update_property(&[gtk4::accessible::Property::Label(name)]);
+        button.set_active(saved_weekdays & (1 << index) != 0);
         let tilted = blur::BlurRow::new(&button, false, 6.0).with_hover_tilt(8.0);
         weekdays.append(&tilted);
+        weekday_buttons.push(button);
     }
     repeat_stack.add_named(&weekdays, Some("weekdays"));
     let repeat_controls = GtkBox::new(Orientation::Vertical, 8);
     repeat_controls.append(&repeat_modes.widget);
     repeat_controls.append(&repeat_stack);
-    repeat_controls.set_sensitive(false);
+    let repeat_enabled = existing_repeat.is_repeating();
+    repeat_switch.set_active(repeat_enabled);
+    repeat_controls.set_sensitive(repeat_enabled);
+    repeat_stack.set_visible_child_name(if repeat_mode_index == 0 {
+        "time"
+    } else {
+        "weekdays"
+    });
     content.append(&repeat_controls);
     let repeat_stack_ref = repeat_stack.downgrade();
     let repeat_modes_ref = repeat_modes.clone();
@@ -1012,6 +1207,26 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
     repeat_switch.connect_active_notify(move |switch| {
         if let Some(controls) = repeat_controls_ref.upgrade() {
             controls.set_sensitive(switch.is_active());
+        }
+    });
+    let date_switch_ref = date_switch.downgrade();
+    let time_switch_ref = time_switch.downgrade();
+    repeat_switch.connect_active_notify(move |switch| {
+        if switch.is_active() {
+            if let Some(date) = date_switch_ref.upgrade() {
+                date.set_active(true);
+            }
+            if let Some(time) = time_switch_ref.upgrade() {
+                time.set_active(true);
+            }
+        }
+    });
+    let repeat_switch_ref = repeat_switch.downgrade();
+    date_switch.connect_active_notify(move |switch| {
+        if !switch.is_active() {
+            if let Some(repeat) = repeat_switch_ref.upgrade() {
+                repeat.set_active(false);
+            }
         }
     });
 
@@ -1032,6 +1247,49 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
             error.set_text("Enter a Flash name.");
             return;
         }
+        let mut early_reminders = early_buttons
+            .iter()
+            .zip(EARLY_REMINDER_OPTIONS)
+            .filter_map(|(button, (_, offset))| button.is_active().then_some(offset))
+            .collect::<Vec<_>>();
+        if custom_selected.get() {
+            if let Some(offset) = custom_offset.get() {
+                early_reminders.push(offset);
+            }
+        }
+        early_reminders.sort_unstable();
+        early_reminders.dedup();
+        let repeat_rule = if repeat_switch.is_active() {
+            if !date_switch.is_active() || !time_switch.is_active() {
+                error.set_text("Repeating Flashes need a date and time.");
+                return;
+            }
+            if repeat_modes.selected() == 0 {
+                let unit = match unit.active() {
+                    Some(0) => db::RepeatUnit::Minutes,
+                    Some(2) => db::RepeatUnit::Days,
+                    Some(3) => db::RepeatUnit::Weeks,
+                    _ => db::RepeatUnit::Hours,
+                };
+                db::RepeatRule::Interval {
+                    every: interval.value_as_int() as u32,
+                    unit,
+                }
+            } else {
+                let days = weekday_buttons
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, button)| button.is_active())
+                    .fold(0u8, |mask, (index, _)| mask | (1 << index));
+                if days == 0 {
+                    error.set_text("Choose at least one weekday.");
+                    return;
+                }
+                db::RepeatRule::Weekdays { days }
+            }
+        } else {
+            db::RepeatRule::None
+        };
         let due = if date_switch.is_active() {
             let text = if time_switch.is_active() {
                 time.text().to_string()
@@ -1077,7 +1335,11 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
                 .and_then(|flash| flash.due_at.as_deref())
                 .and_then(|due| gtk4::glib::DateTime::from_iso8601(due, None).ok())
                 .is_some_and(|old| old.to_unix() == when.to_unix());
-            if !unchanged && when.to_unix() <= now.to_unix() {
+            let same_schedule = unchanged
+                && existing
+                    .as_ref()
+                    .is_some_and(|flash| flash.repeat_rule == repeat_rule);
+            if !same_schedule && when.to_unix() <= now.to_unix() {
                 error.set_text("Choose a future reminder date and time.");
                 return;
             }
@@ -1094,11 +1356,31 @@ fn flash_dialog(ui: &Ui, existing: Option<db::Flash>) {
         } else {
             None
         };
+        if due.is_none() && (!early_reminders.is_empty() || repeat_rule.is_repeating()) {
+            error.set_text("Choose a date and time for earlier or repeating reminders.");
+            return;
+        }
         let intensity = intensity.selected() as u8 + 1;
         let result = if let Some(flash) = &existing {
-            db::update_flash(&ui.db, flash.id, &name, due.as_deref(), intensity)
+            db::update_flash(
+                &ui.db,
+                flash.id,
+                &name,
+                due.as_deref(),
+                intensity,
+                &early_reminders,
+                &repeat_rule,
+            )
         } else {
-            db::add_flash(&ui.db, episode, &name, due.as_deref(), intensity)
+            db::add_flash(
+                &ui.db,
+                episode,
+                &name,
+                due.as_deref(),
+                intensity,
+                &early_reminders,
+                &repeat_rule,
+            )
         };
         match result {
             Ok(()) => {
@@ -1135,47 +1417,84 @@ fn notification_text(
 }
 
 fn check_reminders(ui: &Ui) {
-    match db::due_reminders(&ui.db) {
+    let now = match gtk4::glib::DateTime::now_utc() {
+        Ok(now) => now,
+        Err(e) => {
+            show_error(ui, e);
+            return;
+        }
+    };
+    let local_now = match now.to_local() {
+        Ok(now) => now,
+        Err(e) => {
+            show_error(ui, e);
+            return;
+        }
+    };
+    let now_text = match now.format("%Y-%m-%dT%H:%M:%SZ") {
+        Ok(now) => now.to_string(),
+        Err(e) => {
+            show_error(ui, e);
+            return;
+        }
+    };
+    match db::due_reminders(&ui.db, &now_text) {
         Ok(items) => {
             let mut changed = false;
-            for (flash, notified) in items {
-                let id = flash.id;
-                if let Err(e) = db::fade(&ui.db, id) {
-                    show_error(ui, e);
-                    continue;
-                }
-                changed = true;
-                if !notified {
-                    let message = gtk4::glib::DateTime::now_local()
-                        .and_then(|now| notification_text(&flash, &now));
-                    let (title, body) = match message {
-                        Ok(message) => message,
-                        Err(e) => {
-                            show_error(ui, e);
-                            continue;
-                        }
-                    };
-                    match std::process::Command::new("notify-send")
-                        .args([
-                            "--app-name=Amnessia",
-                            "--icon=com.amnessia.App-triangle",
-                            "--",
-                            &title,
-                            &body,
-                        ])
-                        .status()
-                    {
-                        Ok(status) if status.success() => {
-                            if let Err(e) = db::mark_notified(&ui.db, id) {
-                                show_error(ui, e);
-                            }
-                        }
-                        Ok(status) => show_error(
-                            ui,
-                            format!("Could not send reminder: notify-send exited with {status}"),
-                        ),
-                        Err(e) => show_error(ui, format!("Could not send reminder: {e}")),
+            for reminder in items {
+                let is_due = reminder.offset_minutes == 0;
+                if is_due {
+                    if let Err(e) = db::fade(&ui.db, reminder.flash.id) {
+                        show_error(ui, e);
+                        continue;
                     }
+                    changed = true;
+                }
+                let message = notification_text(&reminder.flash, &local_now);
+                let (title, body) = match message {
+                    Ok(message) => message,
+                    Err(e) => {
+                        show_error(ui, e);
+                        continue;
+                    }
+                };
+                match std::process::Command::new("notify-send")
+                    .args([
+                        "--app-name=Amnessia",
+                        "--icon=com.amnessia.App-triangle",
+                        "--",
+                        &title,
+                        &body,
+                    ])
+                    .status()
+                {
+                    Ok(status) if status.success() => {
+                        let next_due = if is_due {
+                            match repeat::next_due_at(
+                                &reminder.flash.repeat_rule,
+                                &reminder.occurrence_at,
+                                &now,
+                            ) {
+                                Ok(next) => next,
+                                Err(e) => {
+                                    show_error(ui, e);
+                                    continue;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        if let Err(e) =
+                            db::complete_reminder(&ui.db, &reminder, next_due.as_deref())
+                        {
+                            show_error(ui, e);
+                        }
+                    }
+                    Ok(status) => show_error(
+                        ui,
+                        format!("Could not send reminder: notify-send exited with {status}"),
+                    ),
+                    Err(e) => show_error(ui, format!("Could not send reminder: {e}")),
                 }
             }
             if changed && ui.window.is_visible() {
@@ -1444,6 +1763,8 @@ mod tests {
             status: "active".into(),
             intensity: 2,
             due_at: Some(later),
+            early_reminders: Vec::new(),
+            repeat_rule: db::RepeatRule::None,
         };
         assert_eq!(
             notification_text(&flash, &now).unwrap(),
