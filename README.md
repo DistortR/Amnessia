@@ -1,9 +1,46 @@
+<img src="assets/amnessia-logo.png" alt="Amnessia logo" width="480">
+
 # Amnessia
 
-A Rust and GTK4 app for organizing Flashes in Episodes, with a Letter Glitch background inspired by [React Bits](https://reactbits.dev/backgrounds/letter-glitch).
+A native Linux desktop app for keeping track of Flashes in Episodes.
 
-Run `cargo run --release`. GTK 4.10 or newer, SQLite development libraries, and `notify-send` are required. Add Flashes to the default Static Episode or create another Episode. Select a Flash to edit its name, reminder, and Intensity. Use the bulb to resolve or reopen a Flash; the filter shows All, Resolved, or Faded. The exclamation marks show Intensity.
+## Install
 
-A Flash can have one reminder date and time, several earlier reminders, and a repeat schedule by interval or selected weekdays. Times follow the computer's local time and are stored in UTC. When its due time passes unresolved, a Flash becomes Faded and Amnessia sends a desktop notification with its Intensity and scheduled time. Repeating Flashes keep scheduling future occurrences until marked Resolved; reactivating one resumes at its next future occurrence. Closing the window keeps Amnessia running in the background. The Quit button stops reminders; Amnessia must be running for reminders to be delivered. Installing it adds the `amnessia` command and starts the app after graphical login; it checks overdue reminders when started again.
+Install these build and runtime requirements with your distribution's package manager:
 
-Data is stored in `$XDG_DATA_HOME/amnessia/amnessia.db`, or `~/.local/share/amnessia/amnessia.db` if unset. Existing databases are upgraded in place without replacing Episodes or Flashes. The sidebar can be collapsed; the theme switch lasts for the current session. Run `cargo build --release` followed by `bin/install-desktop` to install the icon, launcher, and `amnessia` command, and add the app to Omarchy's Hyprland login startup. The launcher uses the release binary in this project, so rebuild it after changes.
+- Rust and Cargo
+- `pkg-config`
+- GTK 4.10 or newer development files
+- SQLite development files
+- `notify-send` (usually provided by `libnotify`)
+
+Then clone the repository and run the installer as your regular desktop user. Do not use `sudo`:
+
+```sh
+git clone https://github.com/DistortR/Amnessia.git
+cd Amnessia
+./install.sh
+```
+
+The installer checks the requirements, builds the current source in release mode, and installs a user-level app command, icon, menu entry, and login autostart. It uses Omarchy's Hyprland startup hook on Omarchy and XDG autostart on other desktop environments.
+
+## Run and update
+
+Launch Amnessia from your app menu or run:
+
+```sh
+amnessia
+```
+
+To install newer code, update the checkout and rerun the installer:
+
+```sh
+git pull
+./install.sh
+```
+
+For local code changes, just rerun `./install.sh`. Quit and reopen Amnessia to use the newly installed build. Closing its window keeps it running in the tray for reminders; the Quit button stops it. The app starts after graphical login so desktop notifications are available.
+
+## Data
+
+Episodes and Flashes are stored in SQLite at `$XDG_DATA_HOME/amnessia/amnessia.db`, or `~/.local/share/amnessia/amnessia.db` when `XDG_DATA_HOME` is unset. Schema upgrades run automatically and preserve existing data.
