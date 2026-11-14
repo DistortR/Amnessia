@@ -10,16 +10,95 @@ fail() {
 (( EUID != 0 )) || fail 'Run this as your desktop user, without sudo.'
 [[ -n "${HOME:-}" && -d "$HOME" ]] || fail 'Your home directory could not be found.'
 
-for tool in cargo pkg-config install ln mv cp grep sed readlink; do
+for tool in install ln mv cp grep sed readlink; do
   command -v "$tool" >/dev/null 2>&1 || fail "Install the '$tool' command first."
 done
 
-pkg-config --atleast-version=4.10 gtk4 2>/dev/null || {
-  gtk_version=$(pkg-config --modversion gtk4 2>/dev/null || printf 'not installed')
-  fail "GTK 4.10 or newer development files are required (found $gtk_version)."
+find_missing_requirements() {
+  missing=()
+  command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1 || missing+=("Rust and Cargo")
+  command -v pkg-config >/dev/null 2>&1 || missing+=("pkg-config")
+  if command -v pkg-config >/dev/null 2>&1; then
+    if ! pkg-config --atleast-version=4.10 gtk4 2>/dev/null; then
+      gtk_version=$(pkg-config --modversion gtk4 2>/dev/null || printf 'not installed')
+      missing+=("GTK 4.10+ development files (found $gtk_version)")
+    fi
+    pkg-config --exists sqlite3 2>/dev/null || missing+=("SQLite development files")
+  else
+    missing+=("GTK 4.10+ development files" "SQLite development files")
+  fi
+  command -v notify-send >/dev/null 2>&1 || missing+=("notify-send")
 }
-pkg-config --exists sqlite3 2>/dev/null || fail 'SQLite development files are required.'
-command -v notify-send >/dev/null 2>&1 || fail "Install 'notify-send' (usually provided by libnotify)."
+
+find_missing_requirements
+if ((${#missing[@]})); then
+  printf 'Amnessia needs these packages before it can build:\n' >&2
+  printf '  - %s\n' "${missing[@]}" >&2
+
+  . /etc/os-release 2>/dev/null || true
+  distro="${ID:-} ${ID_LIKE:-}"
+  if [[ "$distro" == *arch* ]] && command -v pacman >/dev/null 2>&1; then
+    package_manager=pacman
+  elif [[ "$distro" == *debian* || "$distro" == *ubuntu* ]] && command -v apt-get >/dev/null 2>&1; then
+    package_manager=apt-get
+  elif [[ "$distro" == *fedora* || "$distro" == *rhel* ]] && command -v dnf >/dev/null 2>&1; then
+    package_manager=dnf
+  else
+    package_manager=''
+  fi
+
+  if [[ -z "$package_manager" ]]; then
+    fail "No supported package manager was detected. Install Rust/Cargo, pkg-config, GTK 4.10+ development files, SQLite development files, and notify-send with your distribution's package manager, then rerun ./install.sh."
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    privilege=(sudo)
+  elif command -v doas >/dev/null 2>&1; then
+    privilege=(doas)
+  else
+    privilege=()
+  fi
+
+  update_command=()
+  install_command=()
+  case "$package_manager" in
+    pacman)
+      install_command=("${privilege[@]}" pacman -S --needed base-devel rust pkgconf gtk4 sqlite libnotify)
+      ;;
+    apt-get)
+      update_command=("${privilege[@]}" apt-get update)
+      install_command=("${privilege[@]}" apt-get install build-essential cargo pkg-config libgtk-4-dev libsqlite3-dev libnotify-bin)
+      ;;
+    dnf)
+      install_command=("${privilege[@]}" dnf install gcc gcc-c++ make cargo pkgconf-pkg-config gtk4-devel sqlite-devel libnotify)
+      ;;
+  esac
+
+  printf '\nThe installer can run these system package commands:\n' >&2
+  if ((${#update_command[@]})); then
+    printf '  ' >&2
+    printf '%q ' "${update_command[@]}" >&2
+    printf '\n' >&2
+  fi
+  printf '  ' >&2
+  printf '%q ' "${install_command[@]}" >&2
+  printf '\n' >&2
+  if ((${#privilege[@]} == 0)); then
+    fail 'Neither sudo nor doas is installed. Run the commands above as an administrator, then rerun ./install.sh.'
+  fi
+  if [[ ! -t 0 ]]; then
+    fail 'No interactive terminal is available to approve system package installation. Run the commands above, then rerun ./install.sh.'
+  fi
+  read -r -p 'Install these missing dependencies now? [Y/n] ' answer
+  case "${answer,,}" in
+    n|no) fail 'Dependency installation declined. Run the commands above, then rerun ./install.sh.' ;;
+  esac
+
+  if ((${#update_command[@]})); then "${update_command[@]}"; fi
+  "${install_command[@]}"
+  find_missing_requirements
+  ((${#missing[@]} == 0)) || fail "Dependencies are still missing after package installation: ${missing[*]}"
+fi
 
 project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source_binary="$project_dir/target/release/amnessia-demo"
@@ -60,6 +139,10 @@ icon_path="$data_home/icons/hicolor/scalable/apps/com.amnessia.App-triangle.svg"
 desktop_dir="$data_home/applications"
 desktop_path="$desktop_dir/com.amnessia.App.desktop"
 install -D -m 644 -- "$project_dir/assets/com.amnessia.App.svg" "$icon_path"
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache --force --ignore-theme-index --quiet "$data_home/icons/hicolor" ||
+    printf 'Amnessia installer: warning: could not refresh the user icon cache.\n' >&2
+fi
 mkdir -p -- "$desktop_dir"
 
 escaped_command=$(printf '%s' "$command_path" | sed 's/\\/\\\\/g; s/"/\\"/g; s/%/%%/g')
@@ -70,7 +153,6 @@ Type=Application
 Name=Amnessia
 Comment=Keep track of your Flashes
 Exec="$escaped_command"
-TryExec="$escaped_command"
 Icon=com.amnessia.App-triangle
 Terminal=false
 Categories=Utility;
